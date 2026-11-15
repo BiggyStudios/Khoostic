@@ -47,11 +47,6 @@ cargo run -p khoostic-library --example scan     -- <music dir> <scratch dir>
 
 - **Never make sound on the user's device.** Examples and smoke tests run the engine at volume 0
   (the visualizer tap is pre-volume, so analysis still gets exercised).
-- **Never use `01 Yeah.flac`** from the user's Music folder in any test, example, smoke run or
-  screenshot. Don't point scripts at the whole `~/Music` folder either (that file sorts first and
-  its album shows in library grids). Build a fixture folder in a temp/scratch directory by copying
-  hand-picked tracks (e.g. Tsunami, Blue (Flume Remix), Relax, Kitsunebi, Suzume, Sweater
-  Weather, Bad, Dirty Diana, STYX HELIX) and use that.
 - Examples use a throwaway library at `%TEMP%/khoostic-example-lib`, never the real one.
 - UI changes: verify by rendering. `khoostic_gui::Headless` renders the real GUI offscreen with
   scripted `Input` and waits for cover art; read the PNGs. The TUI renders to `TestBackend`
