@@ -210,7 +210,7 @@ pub fn parse_time(s: &str) -> Option<Duration> {
     let mut secs = 0.0f64;
     for part in s.split(':') {
         let v: f64 = part.parse().ok()?;
-        if !(v >= 0.0) {
+        if !v.is_finite() || v < 0.0 {
             return None;
         }
         secs = secs * 60.0 + v;
@@ -220,10 +220,10 @@ pub fn parse_time(s: &str) -> Option<Duration> {
 
 fn expand_path(s: &str) -> PathBuf {
     let s = s.trim_matches(|c| c == '"' || c == '\'');
-    if let Some(rest) = s.strip_prefix('~') {
-        if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()) {
-            return home.join(rest.trim_start_matches(['/', '\\']));
-        }
+    if let Some(rest) = s.strip_prefix('~')
+        && let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf())
+    {
+        return home.join(rest.trim_start_matches(['/', '\\']));
     }
     PathBuf::from(s)
 }

@@ -56,6 +56,8 @@ pub enum PlayerCommand {
     SetVolume(f32),
     VolumeBy(f32),
     ToggleShuffle,
+    SetShuffle(bool),
+    SetRepeat(RepeatMode),
     CycleRepeat,
 }
 
@@ -321,6 +323,14 @@ impl Controller {
                     let r = q.repeat().cycle();
                     q.set_repeat(r);
                 }
+                self.refresh_preload();
+            }
+            SetShuffle(on) => {
+                self.queue.write().set_shuffle(on);
+                self.refresh_preload();
+            }
+            SetRepeat(mode) => {
+                self.queue.write().set_repeat(mode);
                 self.refresh_preload();
             }
         }

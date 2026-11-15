@@ -919,13 +919,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "crossterm",
  "khoostic-audio",
- "khoostic-core",
+ "khoostic-config",
  "khoostic-player",
- "tracing",
+ "khoostic-tui",
  "tracing-subscriber",
- "walkdir",
 ]
 
 [[package]]

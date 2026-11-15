@@ -94,6 +94,8 @@ pub struct Theme {
     pub accent: String,
     pub selection_fg: String,
     pub selection_bg: String,
+    /// Background of rows inside a visual selection.
+    pub visual_bg: String,
     pub playing: String,
     pub error: String,
     /// Spectrum gradient, bottom to top.
@@ -109,6 +111,7 @@ impl Default for Theme {
             accent: "#89dceb".into(),
             selection_fg: "#1e1e2e".into(),
             selection_bg: "#89dceb".into(),
+            visual_bg: "#45475a".into(),
             playing: "#a6e3a1".into(),
             error: "#f38ba8".into(),
             spectrum: vec![

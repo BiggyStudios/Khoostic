@@ -99,12 +99,12 @@ pub fn parse_keys(s: &str) -> Result<Vec<Chord>, String> {
     let mut out = Vec::new();
     let mut rest = s;
     while let Some(c) = rest.chars().next() {
-        if c == '<' {
-            if let Some(end) = rest.find('>').filter(|&e| e > 1) {
-                out.push(parse_special(&rest[1..end])?);
-                rest = &rest[end + 1..];
-                continue;
-            }
+        if c == '<'
+            && let Some(end) = rest.find('>').filter(|&e| e > 1)
+        {
+            out.push(parse_special(&rest[1..end])?);
+            rest = &rest[end + 1..];
+            continue;
         }
         out.push(Chord::char(c));
         rest = &rest[c.len_utf8()..];
@@ -412,14 +412,14 @@ impl Keymap {
     }
 
     pub fn feed(&mut self, mode: KeyMode, key: Chord) -> Outcome {
-        if self.pending.is_empty() {
-            if let Some(d) = key.digit() {
-                let bound_alone = self.lookup(mode, &[key]).is_some();
-                // `0` is a key of its own unless a count is being typed (vim does the same).
-                if self.count.is_some() || (d != 0 && !bound_alone) {
-                    self.count = Some(self.count.unwrap_or(0).saturating_mul(10).saturating_add(d));
-                    return Outcome::Pending;
-                }
+        if self.pending.is_empty()
+            && let Some(d) = key.digit()
+        {
+            let bound_alone = self.lookup(mode, &[key]).is_some();
+            // `0` is a key of its own unless a count is being typed (vim does the same).
+            if self.count.is_some() || (d != 0 && !bound_alone) {
+                self.count = Some(self.count.unwrap_or(0).saturating_mul(10).saturating_add(d));
+                return Outcome::Pending;
             }
         }
         self.pending.push(key);

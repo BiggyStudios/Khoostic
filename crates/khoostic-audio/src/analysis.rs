@@ -20,7 +20,9 @@ const FFT_SIZE: usize = 2048;
 const HOP: usize = 512;
 const MIN_FREQ: f32 = 30.0;
 const MAX_FREQ: f32 = 16_000.0;
-const FLOOR_DB: f32 = -72.0;
+const FLOOR_DB: f32 = -60.0;
+/// Level that maps to a full bar. Below 0 dBFS because real music rarely peaks a single band.
+const CEIL_DB: f32 = -8.0;
 /// Pink-noise style tilt so highs aren't permanently dwarfed by bass.
 const TILT_DB_PER_OCTAVE: f32 = 3.0;
 const BEAT_HISTORY: usize = 96;
@@ -165,7 +167,7 @@ impl Analyzer {
             let (lo, hi) = self.band_bins[b];
             let peak = self.fft_out[lo..hi].iter().map(mag).fold(0.0, f32::max);
             let db = 20.0 * (peak + 1e-9).log10() + self.band_tilt[b];
-            let target = ((db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0);
+            let target = ((db - FLOOR_DB) / (CEIL_DB - FLOOR_DB)).clamp(0.0, 1.0);
             let cur = f.bands[b];
             // Fast attack, slow release: punchy but not flickery.
             let k = if target > cur { 0.65 } else { 0.18 };
