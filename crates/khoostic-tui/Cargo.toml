@@ -1,0 +1,16 @@
+[package]
+name = "khoostic-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+khoostic-core.workspace = true
+khoostic-audio.workspace = true
+khoostic-player.workspace = true
+khoostic-config.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+ratatui.workspace = true
+fastrand.workspace = true
+unicode-width.workspace = true
