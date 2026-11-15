@@ -1,0 +1,8 @@
+[package]
+name = "khoostic-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fastrand.workspace = true

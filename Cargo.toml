@@ -1,6 +1,57 @@
-[package]
-name = "khoostic_player"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+khoostic-core = { path = "crates/khoostic-core" }
+khoostic-audio = { path = "crates/khoostic-audio" }
+khoostic-player = { path = "crates/khoostic-player" }
+
+anyhow = "1.0.104"
+thiserror = "2.0.21"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+crossbeam-channel = "0.5.17"
+arc-swap = "1.9.5"
+parking_lot = "0.13.0"
+
+symphonia = { version = "0.6.1", features = ["all"] }
+cpal = "0.18.2"
+rubato = "5.1.0"
+rtrb = "0.4.1"
+realfft = "3.5.1"
+
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+walkdir = "2.5.0"
+fastrand = "2.5.0"
+
+[package]
+name = "khoostic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
+khoostic-core.workspace = true
+khoostic-audio.workspace = true
+khoostic-player.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+walkdir.workspace = true
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Audio decode/DSP is unbearably slow unoptimized; optimize deps even in debug.
+[profile.dev.package."*"]
+opt-level = 3

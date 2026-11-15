@@ -1,0 +1,13 @@
+[package]
+name = "khoostic-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+khoostic-core.workspace = true
+khoostic-audio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
