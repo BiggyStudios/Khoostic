@@ -16,7 +16,7 @@ presence and listen-along jams are planned.
 | `khoostic-config` | `config.toml` model; every field defaults, unknown keys are errors |
 | `khoostic-tui` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
 | `khoostic-gui` | winit + wgpu (Vulkan only): SDF quad painter, image pipeline, glyphon text, immediate-mode UI (`app.rs` chrome, `views.rs` pages) |
-| `src/main.rs` | CLI: `khoostic [tui]`, `gui`, `play`, `devices`, `config`, `spotify login|logout|status` |
+| `src/main.rs` | CLI: `khoostic [tui]`, `gui`, `play`, `devices`, `config`, `spotify login/logout/status` |
 
 Data flow: `AudioSource → Conditioner → SPSC ring → cpal callback → speakers`, with the callback
 tapping the same samples into the analysis thread (`ArcSwap<AnalysisFrame>`). The engine tracks
