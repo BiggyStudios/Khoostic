@@ -149,10 +149,12 @@ pub(crate) async fn fetch(
         let mut found = None;
         for alt in alts {
             if let Ok(a) = AudioItem::get_file(session, alt).await
-                && a.availability.is_ok() && !a.files.is_empty() {
-                    found = Some(a);
-                    break;
-                }
+                && a.availability.is_ok()
+                && !a.files.is_empty()
+            {
+                found = Some(a);
+                break;
+            }
         }
         item = found.context("no playable version of this track in your region")?;
     }

@@ -17,17 +17,25 @@ use crate::canvas::{Color, Rect, Weight};
 use crate::ui::{Key, KeyPress, Ui};
 
 /// What a click/key did to a row in a track list.
-enum RowAction {
+pub(crate) enum RowAction {
     None,
     Play(usize),
-    Enqueue(usize),
+    /// Right-click: open the context menu for this row.
+    Menu(usize),
 }
 
-struct TrackListStyle {
-    covers: bool,
-    album_column: bool,
+/// One tile in a cover grid (albums, playlists).
+pub(crate) struct Tile {
+    pub title: String,
+    pub subtitle: String,
+    pub cover: Option<khoostic_core::CoverRef>,
+}
+
+pub(crate) struct TrackListStyle {
+    pub covers: bool,
+    pub album_column: bool,
     /// Show tag track numbers instead of list positions (album pages).
-    track_numbers: bool,
+    pub track_numbers: bool,
 }
 
 impl Gui {
@@ -52,12 +60,21 @@ impl Gui {
             View::Queue => self.queue_view(ui, r, player, snap, a),
             View::Files => self.files_view(ui, r, player),
             View::Visualizer => self.visualizer(ui, r, a, dt),
+            View::Playlists => self.playlists_view(ui, r, player),
+            View::LocalPlaylist(id) => self.local_playlist_view(ui, r, player, snap, a, id),
+            View::SpotifyPlaylist { id, name } => {
+                self.spotify_playlist_view(ui, r, player, snap, a, &id, &name)
+            }
+            View::SpotifyAlbum { id, name } => {
+                self.spotify_album_view(ui, r, player, snap, a, &id, &name)
+            }
+            View::Liked => self.liked_view(ui, r, player, snap, a),
         }
     }
 
     // ---- page header -------------------------------------------------------------------
 
-    fn header(&mut self, ui: &mut Ui, r: Rect, title: &str, subtitle: &str) -> Rect {
+    pub(crate) fn header(&mut self, ui: &mut Ui, r: Rect, title: &str, subtitle: &str) -> Rect {
         let t = ui.theme;
         ui.label(
             title,
@@ -81,7 +98,12 @@ impl Gui {
     }
 
     /// Right-aligned header buttons; returns the index of the one clicked.
-    fn header_buttons(&mut self, ui: &mut Ui, r: Rect, labels: &[&str]) -> Option<usize> {
+    pub(crate) fn header_buttons(
+        &mut self,
+        ui: &mut Ui,
+        r: Rect,
+        labels: &[&str],
+    ) -> Option<usize> {
         let t = ui.theme;
         let mut x = r.right();
         let mut clicked = None;
@@ -98,7 +120,7 @@ impl Gui {
 
     // ---- shared: track lists -------------------------------------------------------------
 
-    fn track_list(
+    pub(crate) fn track_list(
         &mut self,
         ui: &mut Ui,
         r: Rect,
@@ -145,7 +167,7 @@ impl Gui {
                 }
             }
             if hover && ui.input.right_pressed {
-                action = RowAction::Enqueue(i);
+                action = RowAction::Menu(i);
             }
         }
         ui.c.pop_clip();
@@ -154,18 +176,29 @@ impl Gui {
         action
     }
 
-    fn apply_row_action(&mut self, action: RowAction, tracks: &Arc<Vec<Track>>, player: &Player) {
+    pub(crate) fn apply_row_action(
+        &mut self,
+        action: RowAction,
+        tracks: &Arc<Vec<Track>>,
+        player: &Player,
+    ) {
         match action {
             RowAction::None => {}
             RowAction::Play(i) => player.send(Cmd::PlayTracks {
                 tracks: tracks.to_vec(),
                 start: i,
             }),
-            RowAction::Enqueue(i) => {
+            RowAction::Menu(i) => {
                 if let Some(t) = tracks.get(i) {
-                    self.toast(format!("Added “{}” to the queue", t.title));
-                    player.send(Cmd::Enqueue(vec![t.clone()]));
+                    let source = match &self.view {
+                        View::LocalPlaylist(id) => {
+                            crate::spotify_views::MenuSource::LocalPlaylist { id: *id, index: i }
+                        }
+                        _ => crate::spotify_views::MenuSource::Other,
+                    };
+                    self.open_menu(vec![t.clone()], source);
                 }
+                let _ = player;
             }
         }
     }
@@ -179,6 +212,30 @@ impl Gui {
         r: Rect,
         key: &'static str,
         albums: &[Album],
+    ) -> (Option<usize>, Option<usize>) {
+        let tiles: Vec<Tile> = albums
+            .iter()
+            .map(|al| Tile {
+                title: al.name.clone(),
+                subtitle: match (&al.artist, al.year) {
+                    (Some(a), Some(y)) => format!("{a} · {y}"),
+                    (Some(a), None) => a.clone(),
+                    (None, Some(y)) => y.to_string(),
+                    (None, None) => count(al.tracks as usize, "song"),
+                },
+                cover: al.cover.clone(),
+            })
+            .collect();
+        self.tile_grid(ui, r, key, &tiles)
+    }
+
+    /// A responsive grid of cover tiles. Returns (clicked tile, play-button tile).
+    pub(crate) fn tile_grid(
+        &mut self,
+        ui: &mut Ui,
+        r: Rect,
+        key: &'static str,
+        albums: &[Tile],
     ) -> (Option<usize>, Option<usize>) {
         let t = ui.theme.clone();
         const MIN_TILE: f32 = 168.0;
@@ -224,10 +281,10 @@ impl Gui {
                 al.cover.as_ref(),
                 CoverSize::Large,
                 t.radius,
-                &al.name,
+                &al.title,
             );
             ui.label(
-                &al.name,
+                &al.title,
                 x,
                 Rect::new(x, y + tile + 8.0, tile, 22.0),
                 tile,
@@ -235,12 +292,7 @@ impl Gui {
                 Weight::Medium,
                 t.fg,
             );
-            let sub = match (&al.artist, al.year) {
-                (Some(a), Some(y)) => format!("{a} · {y}"),
-                (Some(a), None) => a.clone(),
-                (None, Some(y)) => y.to_string(),
-                (None, None) => count(al.tracks as usize, "song"),
-            };
+            let sub = al.subtitle.clone();
             ui.label(
                 &sub,
                 x,
@@ -662,6 +714,9 @@ impl Gui {
     ) {
         let t = ui.theme.clone();
         let q = self.search.text.trim().to_string();
+        if self.search_tabs(ui, r) {
+            return self.spotify_search_view(ui, r, player, snap, a, &q);
+        }
         let results = match &self.cache.search {
             Some((cached_q, res)) if *cached_q == q => res.clone(),
             _ => {
@@ -845,7 +900,10 @@ impl Gui {
                 clicked = Some((e.id, ui.input.double_click));
             }
             if hover && ui.input.right_pressed {
-                player.send(Cmd::Remove(vec![e.id]));
+                self.open_menu(
+                    vec![(*e.track).clone()],
+                    crate::spotify_views::MenuSource::Queue(e.id),
+                );
             }
         }
         ui.c.pop_clip();
@@ -1077,7 +1135,15 @@ impl Gui {
             ),
             View::Queue => ("queue", player.queue().read().len(), false),
             View::Files => ("files", self.browser.entries().len(), false),
-            View::Visualizer => return,
+            View::Visualizer | View::Playlists => return,
+            View::LocalPlaylist(_)
+            | View::SpotifyPlaylist { .. }
+            | View::SpotifyAlbum { .. }
+            | View::Liked => (
+                "collection",
+                self.collection_tracks().map_or(0, |t| t.len()),
+                false,
+            ),
         };
         if len == 0 {
             return;
@@ -1141,7 +1207,7 @@ impl Gui {
                     View::Album { .. } => self.cache.detail.as_ref().map(|d| d.1.clone()),
                     View::Songs => Some(self.cache.songs.clone()),
                     View::Search => self.cache.search.as_ref().map(|s| s.1.clone()),
-                    _ => None,
+                    _ => self.collection_tracks(),
                 };
                 let Some(tracks) = tracks else { return };
                 match k.key {
@@ -1198,7 +1264,7 @@ impl Cols {
 }
 
 /// Column titles above a track list; returns the list area below them.
-fn column_header(ui: &mut Ui, r: Rect, covers: bool, album: bool) -> Rect {
+pub(crate) fn column_header(ui: &mut Ui, r: Rect, covers: bool, album: bool) -> Rect {
     let t = ui.theme;
     let cols = Cols::new(r.w, covers, album);
     let row = Rect::new(r.x, r.y, r.w, 24.0);
@@ -1322,7 +1388,7 @@ fn draw_track_row(
 }
 
 /// The accent-filled main action button.
-fn primary_button(ui: &mut Ui, r: Rect, label: &str) -> bool {
+pub(crate) fn primary_button(ui: &mut Ui, r: Rect, label: &str) -> bool {
     let t = ui.theme;
     let hover = ui.hovered(r);
     ui.c.rect(
@@ -1362,7 +1428,7 @@ fn scrollbar_rows(ui: &mut Ui, r: Rect, ls: &ListState, rows: usize, row_h: f32)
     );
 }
 
-fn empty_state(ui: &mut Ui, r: Rect, title: &str, hint: &str) {
+pub(crate) fn empty_state(ui: &mut Ui, r: Rect, title: &str, hint: &str) {
     let t = ui.theme;
     let mid = Rect::new(r.x, r.y + r.h * 0.28, r.w, 30.0);
     ui.label_center(title, mid, 18.0, Weight::Medium, t.fg.alpha(0.8));

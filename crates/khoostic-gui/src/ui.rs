@@ -3,6 +3,8 @@
 
 use khoostic_config::GuiTheme;
 use khoostic_core::CoverRef;
+use std::sync::Arc;
+
 use khoostic_library::{CoverSize, Library};
 
 use crate::canvas::{Canvas, Color, Rect, Weight};
@@ -123,7 +125,9 @@ pub struct Ui<'a> {
     pub c: &'a mut Canvas,
     pub text: &'a mut TextSystem,
     pub images: &'a mut ImageStore,
-    pub library: &'a Library,
+    pub library: &'a Arc<Library>,
+    /// Downloads remote images (Spotify covers); `None` when offline/unavailable.
+    pub fetch: Option<&'a UrlFetcher>,
     pub input: &'a Input,
     pub theme: &'a Theme,
 }
@@ -237,16 +241,26 @@ impl Ui<'_> {
         radius: f32,
         seed: &str,
     ) {
-        if let Some(c @ CoverRef::Cached(key)) = cover {
-            let suffix = if size == CoverSize::Small { "s" } else { "l" };
-            let lib = self.library;
-            if let Some(id) = self
-                .images
-                .get(&format!("{key}-{suffix}"), || lib.cover_path(c, size))
-            {
-                self.c.image(r, id, radius, 1.0);
-                return;
+        let ready = match cover {
+            Some(c @ CoverRef::Cached(key)) => {
+                let suffix = if size == CoverSize::Small { "s" } else { "l" };
+                let path = self.library.cover_path(c, size);
+                self.images.get(&format!("{key}-{suffix}"), move || path)
             }
+            // Remote art (Spotify) is downloaded once on a loader thread, then cached on disk.
+            Some(CoverRef::Url(url)) => match self.fetch {
+                Some(fetch) => {
+                    let (lib, fetch, u) = (self.library.clone(), fetch.clone(), url.clone());
+                    self.images
+                        .get(url, move || lib.covers.cached_url(&u, |u| fetch(u)))
+                }
+                None => None,
+            },
+            None => None,
+        };
+        if let Some(id) = ready {
+            self.c.image(r, id, radius, 1.0);
+            return;
         }
         let h = seed
             .bytes()
@@ -316,7 +330,11 @@ impl Ui<'_> {
                     Key::Backspace => {
                         changed |= field.text.pop().is_some();
                     }
-                    Key::Escape | Key::Enter | Key::Down | Key::Tab => field.focused = false,
+                    Key::Escape | Key::Enter | Key::Down | Key::Tab => {
+                        // Keys after this one belong to the page, not the field.
+                        field.focused = false;
+                        break;
+                    }
                     _ => {}
                 }
             }
@@ -368,3 +386,6 @@ fn hsv(h: f32, s: f32, v: f32) -> Color {
         a: 1.0,
     }
 }
+
+/// Fetches remote bytes (cover art URLs) on a loader thread.
+pub type UrlFetcher = Arc<dyn Fn(&str) -> anyhow::Result<Vec<u8>> + Send + Sync>;

@@ -56,6 +56,14 @@ fn main() -> anyhow::Result<()> {
     let stats = library.scan_blocking(&[music.clone().into()])?;
     println!("scan: {stats:?}");
 
+    // A disconnected Spotify client with throwaway storage, so the sidebar shows "Connect".
+    let spotify = khoostic_spotify::Spotify::new(khoostic_spotify::SpotifyConfig {
+        client_id: None,
+        bitrate: khoostic_spotify::Bitrate::B320,
+        data_dir: tmp.join("spotify"),
+        cache_dir: tmp.join("spotify-cache"),
+    })?;
+    let _ = std::fs::remove_dir_all(tmp.join("spotify"));
     let player = Player::start(
         EngineConfig {
             volume: 0.0,
@@ -63,7 +71,13 @@ fn main() -> anyhow::Result<()> {
         },
         Resolvers::with_defaults(),
     )?;
-    let mut h = Headless::new(&config, library.clone(), (1280, 800), 1.0)?;
+    let mut h = Headless::new(
+        &config,
+        library.clone(),
+        Some(spotify.clone()),
+        (1280, 800),
+        1.0,
+    )?;
     let shot = |h: &mut Headless, name: &str, input: &Input| -> anyhow::Result<()> {
         let px = h.frame(input, &player)?;
         save(&format!("{out}/{name}.png"), h.size, &px)
@@ -95,5 +109,22 @@ fn main() -> anyhow::Result<()> {
         &keys(&[Key::Char('b'), Key::Char('a')]),
     )?;
     shot(&mut h, "lib-queue", &keys(&[Key::Escape, Key::Char('4')]))?;
+
+    // Playlists: make a Khoostic playlist, open the context menu on a song, view Playlists.
+    let some: Vec<_> = library
+        .all_tracks(khoostic_library::TrackOrder::Title)
+        .into_iter()
+        .take(4)
+        .collect();
+    library.create_playlist("Road trip", &some)?;
+    h.frame(&keys(&[Key::Char('3')]), &player)?;
+    let row = Input {
+        mouse: Some((600.0, 110.0 + 36.0 + 2.0 * 46.0 + 20.0)),
+        right_pressed: true,
+        ..Default::default()
+    };
+    shot(&mut h, "sp-menu", &row)?;
+    h.frame(&keys(&[Key::Escape]), &player)?;
+    shot(&mut h, "sp-playlists", &click(100.0, 280.0, false))?;
     Ok(())
 }

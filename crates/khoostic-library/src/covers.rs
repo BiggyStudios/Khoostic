@@ -119,6 +119,30 @@ impl CoverStore {
     pub fn store_file(&self, path: &Path) -> anyhow::Result<String> {
         self.store(&std::fs::read(path)?)
     }
+
+    /// A remote image (e.g. Spotify album art), downloaded once with `fetch` and kept on disk.
+    pub fn cached_url(
+        &self,
+        url: &str,
+        fetch: impl FnOnce(&str) -> anyhow::Result<Vec<u8>>,
+    ) -> Option<PathBuf> {
+        let path = self
+            .dir
+            .join(format!("url-{:016x}.img", fnv1a(url.as_bytes())));
+        if path.exists() {
+            return Some(path);
+        }
+        let bytes = fetch(url)
+            .map_err(|e| tracing::debug!("cover {url}: {e:#}"))
+            .ok()?;
+        let tmp = path.with_extension(format!(
+            "{}.tmp",
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&tmp, bytes).ok()?;
+        std::fs::rename(&tmp, &path).ok()?;
+        Some(path)
+    }
 }
 
 /// Finds a cover image in `dir` by conventional file names.

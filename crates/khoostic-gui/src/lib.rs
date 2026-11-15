@@ -9,6 +9,7 @@ pub mod gpu;
 pub mod images;
 pub mod painter;
 pub mod renderer;
+pub mod spotify_views;
 pub mod text;
 pub mod ui;
 pub mod views;
@@ -41,6 +42,7 @@ const WHEEL_STEP: f32 = 84.0;
 pub fn run(
     player: Player,
     library: Arc<Library>,
+    spotify: Option<Arc<khoostic_spotify::Spotify>>,
     config: &Config,
     tracks: Vec<Track>,
     autoplay: bool,
@@ -52,7 +54,7 @@ pub fn run(
             PlayerCommand::Enqueue(tracks)
         });
     }
-    let (gui, problems) = Gui::new(config, library);
+    let (gui, problems) = Gui::new(config, library, spotify);
     let mut app = WinitApp {
         player,
         config: config.clone(),
@@ -342,6 +344,7 @@ impl Headless {
     pub fn new(
         config: &Config,
         library: Arc<Library>,
+        spotify: Option<Arc<khoostic_spotify::Spotify>>,
         size: (u32, u32),
         scale: f32,
     ) -> anyhow::Result<Self> {
@@ -352,7 +355,7 @@ impl Headless {
             Some(config.gui.font.clone()),
         );
         Ok(Self {
-            gui: Gui::new(config, library).0,
+            gui: Gui::new(config, library, spotify).0,
             renderer,
             size,
             scale,

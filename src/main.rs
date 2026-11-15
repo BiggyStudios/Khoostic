@@ -95,7 +95,7 @@ fn main() -> anyhow::Result<()> {
             let spotify = open_spotify(&config, true);
             let tracks = library.tracks_for_paths(&paths);
             let player = Player::start(engine, resolvers(&spotify))?;
-            khoostic_gui::run(player, library, &config, tracks, play)
+            khoostic_gui::run(player, library, spotify, &config, tracks, play)
         }
         Mode::Devices => {
             for name in khoostic_audio::output::device_names()? {

@@ -333,6 +333,16 @@ impl Spotify {
         })
     }
 
+    /// Blocking HTTP GET (cover art). Call from a plain thread, not from async code.
+    pub fn fetch_bytes(&self, url: &str) -> anyhow::Result<Vec<u8>> {
+        let http = self.inner.http.clone();
+        let url = url.to_owned();
+        self.rt.block_on(async move {
+            let r = http.get(&url).send().await?.error_for_status()?;
+            Ok(r.bytes().await?.to_vec())
+        })
+    }
+
     /// The resolver that lets the player stream `TrackLocator::Spotify` tracks.
     pub fn resolver(self: &Arc<Self>) -> SpotifyResolver {
         SpotifyResolver {

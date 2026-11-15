@@ -2248,6 +2248,7 @@ dependencies = [
  "khoostic-core",
  "khoostic-library",
  "khoostic-player",
+ "khoostic-spotify",
  "png",
  "pollster",
  "tracing",

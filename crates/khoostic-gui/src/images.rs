@@ -8,6 +8,9 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::canvas::ImageCmd;
 
+/// Produces the file to decode for an image; runs on a loader thread.
+type Loader = Box<dyn FnOnce() -> Option<PathBuf> + Send>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageId(u64);
 
@@ -47,7 +50,7 @@ pub struct ImageStore {
     gpu: HashMap<ImageId, GpuImage>,
     next_id: u64,
     frame: u64,
-    requests: Sender<(String, PathBuf)>,
+    requests: Sender<(String, Loader)>,
     decoded: Receiver<Option<Decoded>>,
     failed: Receiver<String>,
     /// Per layer: (image, instance index) for the current frame.
@@ -135,7 +138,7 @@ impl ImageStore {
         });
 
         // Decoding happens off the render thread.
-        let (req_tx, req_rx) = crossbeam_channel::unbounded::<(String, PathBuf)>();
+        let (req_tx, req_rx) = crossbeam_channel::unbounded::<(String, Loader)>();
         let (dec_tx, decoded) = crossbeam_channel::unbounded();
         let (fail_tx, failed) = crossbeam_channel::unbounded();
         for i in 0..2 {
@@ -143,8 +146,9 @@ impl ImageStore {
             std::thread::Builder::new()
                 .name(format!("khoostic-images-{i}"))
                 .spawn(move || {
-                    for (key, path) in rx {
-                        match decode(&path) {
+                    for (key, load) in rx {
+                        // The loader may hit disk or the network (remote cover art).
+                        match load().as_deref().and_then(decode) {
                             Some(levels) => {
                                 let _ = tx.send(Some(Decoded { key, levels }));
                             }
@@ -176,8 +180,13 @@ impl ImageStore {
         }
     }
 
-    /// The image for `key` if it's ready; otherwise starts loading `path` and returns `None`.
-    pub fn get(&mut self, key: &str, path: impl FnOnce() -> Option<PathBuf>) -> Option<ImageId> {
+    /// The image for `key` if it's ready; otherwise queues `load` (run on a background thread,
+    /// returning a file to decode) and returns `None`.
+    pub fn get(
+        &mut self,
+        key: &str,
+        load: impl FnOnce() -> Option<PathBuf> + Send + 'static,
+    ) -> Option<ImageId> {
         match self.slots.get_mut(key) {
             Some(Slot::Ready { id, last_used }) => {
                 *last_used = self.frame;
@@ -185,15 +194,8 @@ impl ImageStore {
             }
             Some(_) => None,
             None => {
-                match path() {
-                    Some(p) => {
-                        self.slots.insert(key.to_owned(), Slot::Loading);
-                        let _ = self.requests.send((key.to_owned(), p));
-                    }
-                    None => {
-                        self.slots.insert(key.to_owned(), Slot::Failed);
-                    }
-                }
+                self.slots.insert(key.to_owned(), Slot::Loading);
+                let _ = self.requests.send((key.to_owned(), Box::new(load)));
                 None
             }
         }

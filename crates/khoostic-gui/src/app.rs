@@ -36,6 +36,17 @@ pub enum View {
     Queue,
     Files,
     Visualizer,
+    Playlists,
+    LocalPlaylist(i64),
+    SpotifyPlaylist {
+        id: String,
+        name: String,
+    },
+    SpotifyAlbum {
+        id: String,
+        name: String,
+    },
+    Liked,
 }
 
 impl View {
@@ -44,15 +55,18 @@ impl View {
         match self {
             View::Album { .. } => View::Albums,
             View::Artist(_) => View::Artists,
+            View::LocalPlaylist(_) | View::SpotifyPlaylist { .. } => View::Playlists,
+            View::SpotifyAlbum { .. } => View::Search,
             v => v.clone(),
         }
     }
 }
 
-const LIBRARY_NAV: [(View, &str); 3] = [
+const LIBRARY_NAV: [(View, &str); 4] = [
     (View::Albums, "Albums"),
     (View::Artists, "Artists"),
     (View::Songs, "Songs"),
+    (View::Playlists, "Playlists"),
 ];
 const PLAYER_NAV: [(View, &str); 3] = [
     (View::Queue, "Queue"),
@@ -132,6 +146,14 @@ pub struct Gui {
     toast: Option<(String, Instant)>,
     last_frame: Instant,
     pub(crate) pulse: f32,
+    pub spotify: Option<Arc<khoostic_spotify::Spotify>>,
+    fetch: Option<crate::ui::UrlFetcher>,
+    pub(crate) sp: crate::spotify_views::SpState,
+    pub(crate) menu: Option<crate::spotify_views::ContextMenu>,
+    /// Last known mouse position (for anchoring menus).
+    pub(crate) mouse: (f32, f32),
+    /// Search shows Spotify results instead of the library.
+    pub(crate) search_spotify: bool,
 }
 
 pub struct FrameResult {
@@ -146,7 +168,14 @@ pub struct Gfx<'a> {
 }
 
 impl Gui {
-    pub fn new(config: &Config, library: Arc<Library>) -> (Self, Vec<String>) {
+    pub fn new(
+        config: &Config,
+        library: Arc<Library>,
+        spotify: Option<Arc<khoostic_spotify::Spotify>>,
+    ) -> (Self, Vec<String>) {
+        let fetch = spotify
+            .clone()
+            .map(|s| -> crate::ui::UrlFetcher { Arc::new(move |url: &str| s.fetch_bytes(url)) });
         let g = &config.gui;
         let (theme, problems) = Theme::from_config(&g.theme, g.corner_radius, g.font_size);
         let music_dirs = config.library.music_dirs.clone();
@@ -170,6 +199,12 @@ impl Gui {
             toast: None,
             last_frame: Instant::now(),
             pulse: 0.0,
+            spotify,
+            fetch,
+            sp: Default::default(),
+            menu: None,
+            mouse: (0.0, 0.0),
+            search_spotify: false,
         };
         (gui, problems)
     }
@@ -190,7 +225,7 @@ impl Gui {
     }
 
     /// Switches section from the sidebar: no history, like tabs.
-    fn switch(&mut self, view: View) {
+    pub(crate) fn switch(&mut self, view: View) {
         self.history.clear();
         self.view = view;
     }
@@ -242,10 +277,14 @@ impl Gui {
         self.last_frame = now;
         let images_changed = gfx.images.poll();
         self.refresh_library();
+        self.poll_spotify();
+        if let Some(m) = input.mouse {
+            self.mouse = m;
+        }
 
         let snap = player.snapshot();
         let analysis = player.analysis();
-        if !self.search.focused {
+        if !self.search.focused && self.menu.is_none() {
             self.handle_keys(input, player);
         }
         if input.back_pressed {
@@ -255,14 +294,28 @@ impl Gui {
 
         let theme = self.theme.clone();
         let library = self.library.clone();
+        let fetch = self.fetch.clone();
         let mut ui = Ui {
             c: canvas,
             text: gfx.text,
             images: gfx.images,
             library: &library,
+            fetch: fetch.as_ref(),
             input,
             theme: &theme,
         };
+        // While a menu is open, the page underneath must not react to its clicks.
+        let masked = Input {
+            pressed: false,
+            right_pressed: false,
+            double_click: false,
+            scroll: 0.0,
+            keys: Vec::new(),
+            ..input.clone()
+        };
+        if self.menu.is_some() {
+            ui.input = &masked;
+        }
         let full = ui.c.bounds();
         let (body, bar) = full.split_bottom(BAR_H);
         let (sidebar, main) = body.split_left(SIDEBAR_W);
@@ -276,6 +329,8 @@ impl Gui {
         );
         self.content(&mut ui, main, player, &snap, &analysis, dt);
         self.now_playing(&mut ui, bar, player, &snap, &analysis);
+        ui.input = input;
+        self.draw_menu(&mut ui, player);
         self.draw_toast(&mut ui, full);
 
         let mut scrolling = false;
@@ -290,6 +345,8 @@ impl Gui {
             || self.toast.is_some()
             || self.search.focused
             || self.library.is_scanning()
+            || self.spotify_busy()
+            || self.menu.is_some()
             || analysis.bands.iter().any(|&b| b > 0.0);
         if input.released {
             self.drag = None;
@@ -398,7 +455,7 @@ impl Gui {
 
         let mut y = r.y + 122.0;
         let queue_len = player.queue().read().len();
-        for (title, items) in [("LIBRARY", &LIBRARY_NAV), ("PLAYING", &PLAYER_NAV)] {
+        for (title, items) in [("LIBRARY", &LIBRARY_NAV[..]), ("PLAYING", &PLAYER_NAV[..])] {
             ui.label(
                 title,
                 r.x + 26.0,
@@ -465,6 +522,7 @@ impl Gui {
             }
             y += 14.0;
         }
+        self.sidebar_spotify(ui, r, y);
 
         let foot = Rect::new(r.x + 24.0, r.bottom() - 56.0, r.w - 36.0, 20.0);
         let scanning = self.library.is_scanning();
