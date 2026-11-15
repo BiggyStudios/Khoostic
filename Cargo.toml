@@ -50,6 +50,10 @@ librespot-core = "0.8.0"
 librespot-oauth = "0.8.0"
 librespot-audio = "0.8.0"
 librespot-metadata = "0.8.0"
+librespot-protocol = "0.8.0"
+protobuf = "3.7.2"
+protobuf-json-mapping = "3.7.2"
+http = "1.5.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls"] }
 serde_json = "1.0.154"

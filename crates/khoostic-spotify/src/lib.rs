@@ -1,5 +1,5 @@
-//! Spotify for Khoostic: browser sign-in, Web API (search, playlists, liked songs, adding to
-//! playlists) and streaming through librespot into Khoostic's own audio engine.
+//! Spotify for Khoostic: browser sign-in, your library and search through Spotify's client API,
+//! and streaming through librespot into Khoostic's own audio engine.
 //!
 //! Everything network-bound runs on a private tokio runtime. Frontends get non-blocking
 //! [`Pending`] results they can poll once per frame, plus a [`Status`] to show.
@@ -11,6 +11,7 @@ pub mod source;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use anyhow::Context;
 use crossbeam_channel::Receiver;
@@ -109,6 +110,10 @@ pub struct Spotify {
 }
 
 const AUDIO_CACHE_LIMIT: u64 = 1 << 30;
+/// Starting a session; past this the UI shows an error instead of "connecting" forever.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Any one library/search request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 impl Spotify {
     pub fn new(cfg: SpotifyConfig) -> anyhow::Result<Arc<Self>> {
@@ -161,10 +166,11 @@ impl Spotify {
         self.rt.spawn(async move {
             let result = async {
                 let tokens = auth::sign_in(&inner.http, &inner.client_id, rx).await?;
-                inner.connect(tokens).await
+                inner.connect(Some(tokens)).await
             }
             .await;
             if let Err(e) = result {
+                tracing::warn!("Spotify sign-in failed: {e:#}");
                 inner.set(Status::Failed(format!("{e:#}")));
             }
         });
@@ -176,25 +182,21 @@ impl Spotify {
         }
     }
 
-    /// Reconnects silently using the stored refresh token (call at startup).
+    /// Reconnects silently with what an earlier sign-in saved (call at startup).
     pub fn restore(&self) {
-        let Some(tokens) = self.inner.load_tokens() else {
+        let saved = self.inner.tokens_path().exists()
+            || self.inner.cfg.data_dir.join("credentials.json").exists();
+        if !saved || !matches!(self.status(), Status::Disconnected | Status::Failed(_)) {
             return;
-        };
+        }
         self.inner.set(Status::Connecting);
         let inner = self.inner.clone();
         self.rt.spawn(async move {
-            let result = async {
-                let tokens =
-                    auth::refresh(&inner.http, &inner.client_id, &tokens.refresh_token).await?;
-                inner.connect(tokens).await
-            }
-            .await;
-            if let Err(e) = result {
-                tracing::warn!("Spotify restore failed: {e:#}");
-                inner.set(Status::Failed(
-                    "Spotify session expired — sign in again".into(),
-                ));
+            if let Err(e) = inner.connect(None).await {
+                tracing::warn!("Spotify reconnect failed: {e:#}");
+                inner.set(Status::Failed(format!(
+                    "couldn't reconnect ({e:#}); sign in again"
+                )));
             }
         });
     }
@@ -212,97 +214,58 @@ impl Spotify {
         self.inner.set(Status::Disconnected);
     }
 
-    fn spawn<T, F>(&self, fut: F) -> Pending<T>
+    /// Runs `f` with the streaming session on the runtime, bounded by [`REQUEST_TIMEOUT`].
+    fn with_session<T, F, Fut>(&self, f: F) -> Pending<T>
     where
         T: Send + 'static,
-        F: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+        F: FnOnce(Session) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
     {
         let (tx, rx) = crossbeam_channel::bounded(1);
+        let inner = self.inner.clone();
         self.rt.spawn(async move {
-            let _ = tx.send(fut.await);
+            let work = async {
+                let session = inner.session().await?;
+                f(session).await
+            };
+            let result = tokio::time::timeout(REQUEST_TIMEOUT, work)
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("Spotify didn't answer in time")));
+            let _ = tx.send(result);
         });
         Pending(rx)
     }
 
     pub fn search(&self, query: &str, limit: u32) -> Pending<SearchResults> {
-        let (inner, q) = (self.inner.clone(), query.to_owned());
-        self.spawn(async move {
-            let token = inner.access_token().await?;
-            api::Api {
-                http: &inner.http,
-                token: &token,
-            }
-            .search(&q, limit)
-            .await
-        })
+        let q = query.to_owned();
+        self.with_session(move |s| async move { api::search(&s, &q, limit as usize).await })
     }
 
     pub fn playlists(&self) -> Pending<Vec<Playlist>> {
-        let inner = self.inner.clone();
-        self.spawn(async move {
-            let token = inner.access_token().await?;
-            let me = inner.account()?.id;
-            api::Api {
-                http: &inner.http,
-                token: &token,
-            }
-            .my_playlists(&me)
-            .await
-        })
+        self.with_session(|s| async move { api::playlists(&s).await })
     }
 
     pub fn playlist_tracks(&self, id: &str) -> Pending<Vec<Track>> {
-        let (inner, id) = (self.inner.clone(), id.to_owned());
-        self.spawn(async move {
-            let token = inner.access_token().await?;
-            api::Api {
-                http: &inner.http,
-                token: &token,
-            }
-            .playlist_tracks(&id)
-            .await
-        })
+        let id = id.to_owned();
+        self.with_session(move |s| async move { api::playlist_tracks(&s, &id).await })
     }
 
     pub fn saved_tracks(&self) -> Pending<Vec<Track>> {
-        let inner = self.inner.clone();
-        self.spawn(async move {
-            let token = inner.access_token().await?;
-            api::Api {
-                http: &inner.http,
-                token: &token,
-            }
-            .saved_tracks()
-            .await
-        })
+        self.with_session(|s| async move { api::saved_tracks(&s).await })
     }
 
     pub fn album_tracks(&self, id: &str) -> Pending<Vec<Track>> {
-        let (inner, id) = (self.inner.clone(), id.to_owned());
-        self.spawn(async move {
-            let token = inner.access_token().await?;
-            api::Api {
-                http: &inner.http,
-                token: &token,
-            }
-            .album_tracks(&id)
-            .await
-        })
+        let id = id.to_owned();
+        self.with_session(move |s| async move { api::album_tracks(&s, &id).await })
     }
 
     /// Adds tracks to a Spotify playlist. Local tracks are skipped (Spotify can't store them)
     /// and reported in the outcome.
     pub fn add_to_playlist(&self, playlist_id: &str, tracks: &[Track]) -> Pending<AddOutcome> {
         let (ids, skipped_local) = api::spotify_ids(tracks);
-        let (inner, pid) = (self.inner.clone(), playlist_id.to_owned());
-        self.spawn(async move {
-            let token = inner.access_token().await?;
-            let added = api::Api {
-                http: &inner.http,
-                token: &token,
-            }
-            .add_to_playlist(&pid, &ids)
-            .await?;
+        let pid = playlist_id.to_owned();
+        self.with_session(move |s| async move {
+            let added = api::add_to_playlist(&s, &pid, &ids).await?;
             Ok(AddOutcome {
                 added,
                 skipped_local,
@@ -310,19 +273,13 @@ impl Spotify {
         })
     }
 
-    /// Creates a private playlist with the Spotify tracks among `tracks`.
+    /// Creates a playlist with the Spotify tracks among `tracks`.
     pub fn create_playlist(&self, name: &str, tracks: &[Track]) -> Pending<(String, AddOutcome)> {
         let (ids, skipped_local) = api::spotify_ids(tracks);
-        let (inner, name) = (self.inner.clone(), name.to_owned());
-        self.spawn(async move {
-            let token = inner.access_token().await?;
-            let me = inner.account()?.id;
-            let api = api::Api {
-                http: &inner.http,
-                token: &token,
-            };
-            let id = api.create_playlist(&me, &name).await?;
-            let added = api.add_to_playlist(&id, &ids).await?;
+        let name = name.to_owned();
+        self.with_session(move |s| async move {
+            let id = api::create_playlist(&s, &name).await?;
+            let added = api::add_to_playlist(&s, &id, &ids).await?;
             Ok((
                 id,
                 AddOutcome {
@@ -357,13 +314,6 @@ impl Inner {
         self.version.fetch_add(1, Ordering::AcqRel);
     }
 
-    fn account(&self) -> anyhow::Result<Account> {
-        match &*self.status.lock() {
-            Status::Connected(a) => Ok(a.clone()),
-            _ => anyhow::bail!("not connected to Spotify"),
-        }
-    }
-
     fn tokens_path(&self) -> PathBuf {
         self.cfg.data_dir.join("tokens.json")
     }
@@ -378,10 +328,13 @@ impl Inner {
         }
     }
 
-    /// A valid Web API token, refreshing (and persisting) it when needed.
+    /// A valid OAuth token (only needed to start a session), refreshed and saved when stale.
     async fn access_token(&self) -> anyhow::Result<String> {
         let mut guard = self.tokens.lock().await;
-        let t = guard.as_mut().context("not connected to Spotify")?;
+        if guard.is_none() {
+            *guard = self.load_tokens();
+        }
+        let t = guard.as_mut().context("not signed in to Spotify")?;
         if t.stale() {
             *t = auth::refresh(&self.http, &self.client_id, &t.refresh_token).await?;
             self.save_tokens(t);
@@ -389,43 +342,63 @@ impl Inner {
         Ok(t.access_token.clone())
     }
 
-    async fn new_session(&self, access_token: &str) -> anyhow::Result<Session> {
-        let cache = Cache::new(
+    fn cache(&self) -> Option<Cache> {
+        Cache::new(
             Some(self.cfg.data_dir.clone()),
             None,
             Some(self.cfg.cache_dir.clone()),
             Some(AUDIO_CACHE_LIMIT),
         )
-        .ok();
+        .ok()
+    }
+
+    async fn new_session(&self, credentials: Credentials) -> anyhow::Result<Session> {
         let config = SessionConfig {
             client_id: self.client_id.clone(),
             ..Default::default()
         };
-        let session = Session::new(config, cache);
-        session
-            .connect(Credentials::with_access_token(access_token), true)
+        let session = Session::new(config, self.cache());
+        tokio::time::timeout(CONNECT_TIMEOUT, session.connect(credentials, true))
             .await
+            .map_err(|_| anyhow::anyhow!("Spotify didn't answer in time"))?
             .context("connecting to Spotify")?;
         Ok(session)
     }
 
-    async fn connect(&self, tokens: Tokens) -> anyhow::Result<()> {
-        self.set(Status::Connecting);
-        self.save_tokens(&tokens);
-        let me = api::Api {
-            http: &self.http,
-            token: &tokens.access_token,
+    /// Starts a session: librespot's saved credentials first (no sign-in server involved),
+    /// then a fresh OAuth token.
+    async fn open_session(&self) -> anyhow::Result<Session> {
+        if let Some(creds) = self.cache().and_then(|c| c.credentials()) {
+            match self.new_session(creds).await {
+                Ok(s) => return Ok(s),
+                Err(e) => tracing::info!("saved Spotify credentials didn't work: {e:#}"),
+            }
         }
-        .me()
-        .await?;
-        let session = self.new_session(&tokens.access_token).await?;
-        *self.session.lock().await = Some(session);
-        *self.tokens.lock().await = Some(tokens);
-        let account = Account {
-            name: me.display_name.clone().unwrap_or_else(|| me.id.clone()),
-            premium: me.product.as_deref() == Some("premium"),
-            id: me.id,
+        let token = self.access_token().await?;
+        self.new_session(Credentials::with_access_token(token))
+            .await
+    }
+
+    /// Connects and publishes the account. `tokens` comes from a fresh browser sign-in.
+    async fn connect(&self, tokens: Option<Tokens>) -> anyhow::Result<()> {
+        self.set(Status::Connecting);
+        let session = match tokens {
+            Some(t) => {
+                self.save_tokens(&t);
+                let token = t.access_token.clone();
+                *self.tokens.lock().await = Some(t);
+                self.new_session(Credentials::with_access_token(token))
+                    .await?
+            }
+            None => self.open_session().await?,
         };
+        let (name, premium) = api::account(&session).await;
+        let account = Account {
+            id: session.username(),
+            name,
+            premium,
+        };
+        *self.session.lock().await = Some(session);
         tracing::info!(user = %account.name, premium = account.premium, "connected to Spotify");
         self.set(Status::Connected(account));
         Ok(())
@@ -437,13 +410,10 @@ impl Inner {
         if let Some(s) = guard.as_ref().filter(|s| !s.is_invalid()) {
             return Ok(s.clone());
         }
-        let token = {
-            drop(guard);
-            let t = self.access_token().await?;
-            guard = self.session.lock().await;
-            t
-        };
-        let s = self.new_session(&token).await?;
+        if !matches!(*self.status.lock(), Status::Connected(_)) {
+            anyhow::bail!("not connected to Spotify");
+        }
+        let s = self.open_session().await?;
         *guard = Some(s.clone());
         Ok(s)
     }

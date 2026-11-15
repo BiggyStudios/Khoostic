@@ -358,7 +358,15 @@ fn alloc(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
 
 /// Decodes an image and builds its mip chain (box-filtered halvings).
 fn decode(path: &std::path::Path) -> Option<Vec<(u32, u32, Vec<u8>)>> {
-    let img = image::open(path).ok()?.to_rgba8();
+    // Sniff the format from the bytes: downloaded covers are cached without a real extension.
+    let img = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .map_err(|e| tracing::debug!("cover {}: {e}", path.display()))
+        .ok()?
+        .to_rgba8();
     let mut levels = vec![(img.width(), img.height(), img.clone().into_raw())];
     let mut cur = img;
     while cur.width() > 1 || cur.height() > 1 {

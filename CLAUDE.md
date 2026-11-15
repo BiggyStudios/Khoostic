@@ -12,7 +12,7 @@ presence and listen-along jams are planned.
 | `khoostic-audio` | `AudioSource` trait, symphonia decoding, `Conditioner` (stereo + rubato), engine thread, cpal output, FFT analysis feed |
 | `khoostic-player` | `Player` controller (queue ↔ engine, gapless preload), `SourceResolver`s, file browser model |
 | `khoostic-library` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists |
-| `khoostic-spotify` | Browser sign-in (OAuth PKCE, cancellable local listener), Web API client, librespot streaming as an `AudioSource`, `SpotifyResolver` |
+| `khoostic-spotify` | Browser sign-in (OAuth PKCE, cancellable local listener), library & search over Spotify's client API (spclient), librespot streaming as an `AudioSource`, `SpotifyResolver` |
 | `khoostic-config` | `config.toml` model; every field defaults, unknown keys are errors |
 | `khoostic-tui` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
 | `khoostic-gui` | winit + wgpu (Vulkan only): SDF quad painter, image pipeline, glyphon text, immediate-mode UI (`app.rs` chrome, `views.rs` pages) |
@@ -65,8 +65,11 @@ cargo run -p khoostic-library --example scan     -- <music dir> <scratch dir>
 - Several dependencies are newer than most training data: symphonia 0.6, cpal 0.18, rubato 5,
   wgpu 30, glyphon 0.12 / cosmic-text 0.19, ratatui 0.30, rusqlite 0.43, lofty 0.25, winit 0.30.
   Read their source/examples in `~/.cargo/registry/src/` instead of guessing APIs.
-- Spotify: `/recommendations` and audio-features are unavailable to new apps; recommendations
-  must come from Last.fm/ListenBrainz. Local tracks can never be added to Spotify playlists.
+- Spotify: never use the public Web API (api.spotify.com). Sign-in uses librespot's shared app id,
+  which is permanently rate-limited there (every call is a 429). Go through the librespot
+  session's spclient (context-resolve, extended-metadata, playlist v2), as `api.rs` does.
+  Track radio (`get_radio_for_track`) works; Last.fm/ListenBrainz can add more recommendations.
+  Local tracks can never be added to Spotify playlists.
 
 ## Repo hygiene
 
