@@ -8,6 +8,7 @@ license.workspace = true
 khoostic-core.workspace = true
 khoostic-audio.workspace = true
 khoostic-player.workspace = true
+khoostic-library.workspace = true
 khoostic-config.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
@@ -15,3 +16,5 @@ ratatui.workspace = true
 fastrand.workspace = true
 unicode-width.workspace = true
 directories.workspace = true
+
+[dev-dependencies]

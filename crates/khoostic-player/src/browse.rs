@@ -3,8 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::scan::natural_cmp;
 use khoostic_audio::is_supported_path;
+use khoostic_core::sort::natural_cmp;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryKind {

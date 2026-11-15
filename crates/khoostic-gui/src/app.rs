@@ -1,13 +1,15 @@
 //! The GUI's state and views, built immediate-mode every frame.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use khoostic_audio::{AnalysisFrame, BANDS, PlaybackState};
 use khoostic_config::Config;
 use khoostic_core::{RepeatMode, Track, TrackLocator};
+use khoostic_library::Library;
 use khoostic_player::browse::{Browser, EntryKind};
-use khoostic_player::{Player, PlayerCommand as Cmd, PlayerSnapshot, scan};
+use khoostic_player::{Player, PlayerCommand as Cmd, PlayerSnapshot};
 
 use crate::canvas::{Canvas, Color, Rect, Weight};
 use crate::text::TextSystem;
@@ -75,6 +77,7 @@ enum Drag {
 
 pub struct Gui {
     pub theme: Theme,
+    pub library: Arc<Library>,
     pub view: View,
     queue: ListState,
     browse: ListState,
@@ -93,7 +96,7 @@ pub struct FrameResult {
 }
 
 impl Gui {
-    pub fn new(config: &Config) -> (Self, Vec<String>) {
+    pub fn new(config: &Config, library: Arc<Library>) -> (Self, Vec<String>) {
         let g = &config.gui;
         let (theme, problems) = Theme::from_config(&g.theme, g.corner_radius, g.font_size);
         let music_dirs = config.library.music_dirs.clone();
@@ -104,6 +107,7 @@ impl Gui {
             .unwrap_or_else(|| PathBuf::from("."));
         let gui = Self {
             theme,
+            library,
             view: View::Queue,
             queue: ListState::default(),
             browse: ListState::default(),
@@ -179,7 +183,7 @@ impl Gui {
         if input.dropped.is_empty() {
             return;
         }
-        let tracks = scan::collect_tracks(&input.dropped);
+        let tracks = self.library.tracks_for_paths(&input.dropped);
         if tracks.is_empty() {
             self.toast("nothing playable in what was dropped");
         } else {
@@ -310,7 +314,7 @@ impl Gui {
         let Some(e) = self.browser.entries().get(index) else {
             return;
         };
-        let tracks = scan::collect_tracks(&[&e.path]);
+        let tracks = self.library.tracks_for_paths(&[&e.path]);
         if tracks.is_empty() {
             return self.toast("nothing playable there");
         }
@@ -573,7 +577,7 @@ impl Gui {
             if clicked {
                 match act {
                     0 => {
-                        let tracks = scan::collect_tracks(&[self.browser.dir()]);
+                        let tracks = self.library.tracks_for_paths(&[self.browser.dir()]);
                         self.toast(format!(
                             "added {} track{}",
                             tracks.len(),

@@ -2,11 +2,13 @@
 
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use khoostic_config::Config;
 use khoostic_core::Track;
-use khoostic_player::{Player, PlayerCommand as Cmd, PlayerEvent, scan};
+use khoostic_library::Library;
+use khoostic_player::{Player, PlayerCommand as Cmd, PlayerEvent};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::action::Action;
@@ -71,6 +73,7 @@ impl ListView {
 
 pub struct App {
     pub player: Player,
+    pub library: Arc<Library>,
     pub theme: Theme,
     pub keymap: Keymap,
     pub view: View,
@@ -95,7 +98,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(player: Player, config: &Config) -> Self {
+    pub fn new(player: Player, library: Arc<Library>, config: &Config) -> Self {
         let (theme, mut problems) = Theme::from_config(&config.tui.theme);
         let (keymap, key_problems) = Keymap::default().with_overrides(&config.tui.keys);
         problems.extend(key_problems);
@@ -107,6 +110,7 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("."));
         let mut app = Self {
             player,
+            library,
             theme,
             keymap,
             view: View::Queue,
@@ -255,7 +259,7 @@ impl App {
             .into_iter()
             .filter(|p| p.exists())
             .collect();
-        let tracks = scan::collect_tracks(&paths);
+        let tracks = self.library.tracks_for_paths(&paths);
         if tracks.is_empty() {
             self.error("pasted text contains no playable files");
         } else {
@@ -585,7 +589,7 @@ impl App {
             .iter()
             .map(|e| e.path.clone())
             .collect();
-        scan::collect_tracks(&paths)
+        self.library.tracks_for_paths(&paths)
     }
 
     /// Text that search matches against, per row of the current view.
@@ -659,7 +663,7 @@ impl App {
             C::Quit => self.quit = true,
             C::Run(a) => self.perform(a, None),
             C::Add(path) => {
-                let tracks = scan::collect_tracks(&[&path]);
+                let tracks = self.library.tracks_for_paths(&[&path]);
                 if tracks.is_empty() {
                     self.error(format!("no playable files at {}", path.display()));
                 } else {

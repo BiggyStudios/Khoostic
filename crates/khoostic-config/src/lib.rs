@@ -46,6 +46,8 @@ impl Default for AudioConfig {
 pub struct LibraryConfig {
     /// Folders the browser starts in / the library scans.
     pub music_dirs: Vec<PathBuf>,
+    /// Rescan the music folders in the background at startup (only changed files are read).
+    pub scan_on_startup: bool,
 }
 
 impl Default for LibraryConfig {
@@ -54,7 +56,10 @@ impl Default for LibraryConfig {
             .and_then(|u| u.audio_dir().map(Path::to_path_buf))
             .into_iter()
             .collect();
-        Self { music_dirs: music }
+        Self {
+            music_dirs: music,
+            scan_on_startup: true,
+        }
     }
 }
 

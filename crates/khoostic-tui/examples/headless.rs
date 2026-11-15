@@ -23,7 +23,9 @@ fn main() -> anyhow::Result<()> {
         },
         Resolvers::with_defaults(),
     )?;
-    let mut app = App::new(player, &config);
+    let tmp = std::env::temp_dir().join("khoostic-example-lib");
+    let library = khoostic_library::Library::open(&tmp.join("lib.db"), &tmp.join("covers"))?;
+    let mut app = App::new(player, library, &config);
     let mut term = Terminal::new(TestBackend::new(100, 24))?;
 
     let mut screen = |app: &mut App, label: &str| -> anyhow::Result<()> {

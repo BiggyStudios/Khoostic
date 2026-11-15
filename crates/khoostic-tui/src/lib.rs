@@ -9,10 +9,12 @@ pub mod theme;
 pub mod ui;
 pub mod visualizer;
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use khoostic_config::Config;
 use khoostic_core::Track;
+use khoostic_library::Library;
 use khoostic_player::{Player, PlayerCommand};
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind,
@@ -29,8 +31,13 @@ pub struct Launch {
     pub autoplay: bool,
 }
 
-pub fn run(player: Player, config: &Config, launch: Launch) -> anyhow::Result<()> {
-    let mut app = App::new(player, config);
+pub fn run(
+    player: Player,
+    library: Arc<Library>,
+    config: &Config,
+    launch: Launch,
+) -> anyhow::Result<()> {
+    let mut app = App::new(player, library, config);
     if !launch.tracks.is_empty() {
         app.player.send(if launch.autoplay {
             PlayerCommand::EnqueueAndPlay(launch.tracks)

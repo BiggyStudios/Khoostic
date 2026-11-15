@@ -8,7 +8,8 @@ use khoostic_audio::EngineConfig;
 use khoostic_config::Config;
 use khoostic_gui::Headless;
 use khoostic_gui::ui::{Input, Key, KeyPress};
-use khoostic_player::{Player, PlayerCommand, Resolvers, scan};
+use khoostic_library::Library;
+use khoostic_player::{Player, PlayerCommand, Resolvers};
 
 fn save(path: &str, size: (u32, u32), px: &[u8]) -> anyhow::Result<()> {
     let file = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -44,9 +45,12 @@ fn main() -> anyhow::Result<()> {
         },
         Resolvers::with_defaults(),
     )?;
-    let mut h = Headless::new(&config, (1280, 780), 1.0)?;
+    let tmp = std::env::temp_dir().join("khoostic-example-lib");
+    let library = Library::open(&tmp.join("lib.db"), &tmp.join("covers"))?;
+    library.scan_blocking(&[music.clone().into()])?;
+    let mut h = Headless::new(&config, library.clone(), (1280, 780), 1.0)?;
 
-    let tracks = scan::collect_tracks(&[&music]);
+    let tracks = library.tracks_for_paths(&[&music]);
     player.send(PlayerCommand::Enqueue(
         tracks.into_iter().take(14).collect(),
     ));
@@ -94,7 +98,7 @@ fn main() -> anyhow::Result<()> {
     // Empty queue state, at 1.5x UI scale to check DPI handling.
     player.send(PlayerCommand::Clear);
     std::thread::sleep(Duration::from_millis(200));
-    let mut h2 = Headless::new(&config, (1280, 780), 1.5)?;
+    let mut h2 = Headless::new(&config, library.clone(), (1280, 780), 1.5)?;
     save(
         &format!("{out}/gui-empty-1.5x.png"),
         h2.size,

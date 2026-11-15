@@ -6,7 +6,6 @@
 
 pub mod browse;
 pub mod resolve;
-pub mod scan;
 
 use std::sync::Arc;
 use std::thread;

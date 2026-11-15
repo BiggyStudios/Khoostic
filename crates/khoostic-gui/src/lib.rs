@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use khoostic_config::Config;
 use khoostic_core::Track;
+use khoostic_library::Library;
 use khoostic_player::{Player, PlayerCommand, PlayerEvent};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -37,6 +38,7 @@ const WHEEL_STEP: f32 = 84.0;
 
 pub fn run(
     player: Player,
+    library: Arc<Library>,
     config: &Config,
     tracks: Vec<Track>,
     autoplay: bool,
@@ -48,7 +50,7 @@ pub fn run(
             PlayerCommand::Enqueue(tracks)
         });
     }
-    let (gui, problems) = Gui::new(config);
+    let (gui, problems) = Gui::new(config, library);
     let mut app = WinitApp {
         player,
         config: config.clone(),
@@ -331,7 +333,12 @@ pub struct Headless {
 }
 
 impl Headless {
-    pub fn new(config: &Config, size: (u32, u32), scale: f32) -> anyhow::Result<Self> {
+    pub fn new(
+        config: &Config,
+        library: Arc<Library>,
+        size: (u32, u32),
+        scale: f32,
+    ) -> anyhow::Result<Self> {
         let gpu = pollster::block_on(Gpu::headless())?;
         let renderer = Renderer::new(
             gpu,
@@ -339,7 +346,7 @@ impl Headless {
             Some(config.gui.font.clone()),
         );
         Ok(Self {
-            gui: Gui::new(config).0,
+            gui: Gui::new(config, library).0,
             renderer,
             size,
             scale,

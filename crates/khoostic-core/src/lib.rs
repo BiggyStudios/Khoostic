@@ -4,7 +4,8 @@
 //! jam sessions) can share it cheaply.
 
 pub mod queue;
+pub mod sort;
 pub mod track;
 
 pub use queue::{EntryId, Queue, QueueEntry, RepeatMode};
-pub use track::{SourceKind, Track, TrackLocator};
+pub use track::{CoverRef, SourceKind, Track, TrackLocator};

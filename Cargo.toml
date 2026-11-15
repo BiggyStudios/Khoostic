@@ -14,6 +14,7 @@ khoostic-player = { path = "crates/khoostic-player" }
 khoostic-config = { path = "crates/khoostic-config" }
 khoostic-tui = { path = "crates/khoostic-tui" }
 khoostic-gui = { path = "crates/khoostic-gui" }
+khoostic-library = { path = "crates/khoostic-library" }
 
 anyhow = "1.0.104"
 thiserror = "2.0.21"
@@ -44,6 +45,9 @@ glyphon = "0.12.0"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 pollster = "1.0.1"
 png = "0.18"
+lofty = "0.25.5"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }
 
 [package]
 name = "khoostic"
@@ -54,6 +58,7 @@ license.workspace = true
 [dependencies]
 khoostic-audio.workspace = true
 khoostic-player.workspace = true
+khoostic-library.workspace = true
 anyhow.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true

@@ -7,7 +7,8 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use khoostic_audio::EngineConfig;
 use khoostic_config::Config;
-use khoostic_player::{Player, Resolvers, scan};
+use khoostic_library::Library;
+use khoostic_player::{Player, Resolvers};
 
 #[derive(Parser)]
 #[command(name = "khoostic", version, about = "An overengineered music player")]
@@ -74,9 +75,10 @@ fn main() -> anyhow::Result<()> {
         Mode::Tui { paths } => tui(engine, &config, &paths, false, false),
         Mode::Play { paths, shuffle } => tui(engine, &config, &paths, true, shuffle),
         Mode::Gui { paths, play } => {
-            let tracks = scan::collect_tracks(&paths);
+            let library = open_library(&config)?;
+            let tracks = library.tracks_for_paths(&paths);
             let player = Player::start(engine, Resolvers::with_defaults())?;
-            khoostic_gui::run(player, &config, tracks, play)
+            khoostic_gui::run(player, library, &config, tracks, play)
         }
         Mode::Devices => {
             for name in khoostic_audio::output::device_names()? {
@@ -107,7 +109,8 @@ fn tui(
     autoplay: bool,
     shuffle: bool,
 ) -> anyhow::Result<()> {
-    let tracks = scan::collect_tracks(paths);
+    let library = open_library(config)?;
+    let tracks = library.tracks_for_paths(paths);
     if autoplay && tracks.is_empty() {
         anyhow::bail!("no playable audio files found");
     }
@@ -115,7 +118,21 @@ fn tui(
     if shuffle {
         player.send(khoostic_player::PlayerCommand::SetShuffle(true));
     }
-    khoostic_tui::run(player, config, khoostic_tui::Launch { tracks, autoplay })
+    khoostic_tui::run(
+        player,
+        library,
+        config,
+        khoostic_tui::Launch { tracks, autoplay },
+    )
+}
+
+/// Opens the library index and, if configured, refreshes it in the background.
+fn open_library(config: &Config) -> anyhow::Result<std::sync::Arc<Library>> {
+    let library = Library::open_default()?;
+    if config.library.scan_on_startup && !config.library.music_dirs.is_empty() {
+        library.start_scan(config.library.music_dirs.clone());
+    }
+    Ok(library)
 }
 
 /// Logs go to a file: anything on stderr would corrupt the TUI.
