@@ -1596,6 +1596,7 @@ dependencies = [
  "anyhow",
  "directories",
  "fastrand",
+ "image",
  "khoostic-audio",
  "khoostic-config",
  "khoostic-core",

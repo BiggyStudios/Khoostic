@@ -11,16 +11,26 @@ use crate::keymap::KeyMode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Queue,
+    Albums,
+    Songs,
     Browse,
     Visualizer,
 }
 
 impl View {
-    pub const ALL: [View; 3] = [View::Queue, View::Browse, View::Visualizer];
+    pub const ALL: [View; 5] = [
+        View::Queue,
+        View::Albums,
+        View::Songs,
+        View::Browse,
+        View::Visualizer,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             View::Queue => "Queue",
+            View::Albums => "Albums",
+            View::Songs => "Songs",
             View::Browse => "Browse",
             View::Visualizer => "Visualizer",
         }
@@ -82,7 +92,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "bind keys (session only; put in config to persist)",
     ),
     (":unmap [n|v] <keys>", "remove a binding"),
-    (":view <queue|browse|vis>", "switch view"),
+    (":view <queue|albums|songs|browse|vis>", "switch view"),
     (
         ":config [init]",
         "show config path / write a default config",
@@ -125,9 +135,11 @@ pub fn parse(line: &str) -> Result<Cmd, String> {
         "map" | "nmap" | "vmap" | "unmap" | "nunmap" | "vunmap" => parse_map(name, arg)?,
         "view" => Cmd::View(match arg {
             Some("queue" | "q") => View::Queue,
+            Some("albums" | "library" | "l") => View::Albums,
+            Some("songs" | "s") => View::Songs,
             Some("browse" | "b" | "files") => View::Browse,
             Some("vis" | "visualizer" | "v") => View::Visualizer,
-            _ => return Err("usage: :view <queue|browse|vis>".into()),
+            _ => return Err("usage: :view <queue|albums|songs|browse|vis>".into()),
         }),
         "h" | "help" => Cmd::Help,
         "config" => Cmd::Config {

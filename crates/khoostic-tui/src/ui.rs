@@ -38,6 +38,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let main = pad_x(main, 1);
     match app.view {
         View::Queue => draw_queue(f.buffer_mut(), main, app, &snap),
+        View::Albums => draw_albums(f.buffer_mut(), main, app, &snap),
+        View::Songs => draw_songs(f.buffer_mut(), main, app, &snap),
         View::Browse => draw_browser(f.buffer_mut(), main, app),
         View::Visualizer => {
             let a = app.player.analysis();
@@ -336,7 +338,28 @@ fn draw_browser(buf: &mut Buffer, area: Rect, app: &mut App) {
     }
 }
 
-fn draw_now_playing(buf: &mut Buffer, area: Rect, app: &App, snap: &PlayerSnapshot) {
+fn draw_now_playing(buf: &mut Buffer, area: Rect, app: &mut App, snap: &PlayerSnapshot) {
+    // Cover art as 6x3 half-block cells (6x6 pixels) when the terminal is wide enough.
+    let area = if area.width > 60 {
+        let cover = snap.current.as_ref().and_then(|e| e.track.cover.clone());
+        let cell_area = Rect {
+            width: 6,
+            height: 3,
+            ..area
+        };
+        if let Some(cells) = app.lib.cover_cells(&app.library, cover.as_ref(), 6, 3) {
+            paint_cells(buf, cell_area, cells);
+        } else {
+            buf.set_style(cell_area, Style::new().bg(app.theme.visual_bg));
+        }
+        Rect {
+            x: area.x + 8,
+            width: area.width - 8,
+            ..area
+        }
+    } else {
+        area
+    };
     let t = &app.theme;
     let [line1, line2, _] = Layout::vertical([Constraint::Length(1); 3]).areas(area);
     let spec_w = (area.width / 4).clamp(8, 32);
@@ -565,6 +588,318 @@ fn truncate_left(s: &str, max: usize) -> String {
         start -= 1;
     }
     format!("…{}", chars[start..].iter().collect::<String>())
+}
+
+/// Paints half-block cover cells (`▀`: fg = top pixel, bg = bottom pixel).
+fn paint_cells(
+    buf: &mut Buffer,
+    area: Rect,
+    cells: &[(ratatui::style::Color, ratatui::style::Color)],
+) {
+    for (i, (top, bottom)) in cells.iter().enumerate() {
+        let (x, y) = (i as u16 % area.width, i as u16 / area.width);
+        if let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
+            cell.set_symbol("▀").set_fg(*top).set_bg(*bottom);
+        }
+    }
+}
+
+/// Row style without borrowing the whole app (so track lists can borrow library data).
+fn list_row_style(
+    theme: &crate::theme::Theme,
+    mode: &Mode,
+    index: usize,
+    view: &ListView,
+    playing: bool,
+) -> Style {
+    let in_visual = match mode {
+        Mode::Visual { anchor } => {
+            let (a, b) = ((*anchor).min(view.selected), (*anchor).max(view.selected));
+            (a..=b).contains(&index)
+        }
+        _ => false,
+    };
+    if index == view.selected {
+        theme.selected()
+    } else if in_visual {
+        Style::new().bg(theme.visual_bg).fg(theme.fg)
+    } else if playing {
+        Style::new().fg(theme.playing)
+    } else {
+        Style::new().fg(theme.fg)
+    }
+}
+
+/// A track table: number, title, artist, (album), time. `numbers` uses tag track numbers.
+#[allow(clippy::too_many_arguments)]
+fn draw_tracks(
+    buf: &mut Buffer,
+    area: Rect,
+    theme: &crate::theme::Theme,
+    mode: &Mode,
+    tracks: &[khoostic_core::Track],
+    view: &ListView,
+    playing: Option<&khoostic_core::TrackLocator>,
+    numbers: bool,
+    album_col: bool,
+) {
+    let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    let num_w = 4u16;
+    let flex = area.width.saturating_sub(num_w + 2 + 8 + 6);
+    let (title_w, artist_w) = if album_col {
+        (flex * 45 / 100, flex * 25 / 100)
+    } else {
+        (flex * 60 / 100, flex * 40 / 100)
+    };
+    let album_w = if album_col {
+        flex - title_w - artist_w
+    } else {
+        0
+    };
+    let xs = [
+        0,
+        num_w + 2,
+        num_w + 2 + title_w + 2,
+        num_w + 2 + title_w + artist_w + 4,
+    ];
+    let dim = theme.dim();
+    buf.set_string(head.x, head.y, rpad("#", num_w), dim);
+    buf.set_string(head.x + xs[1], head.y, "title", dim);
+    buf.set_string(head.x + xs[2], head.y, "artist", dim);
+    if album_col {
+        buf.set_string(head.x + xs[3], head.y, "album", dim);
+    }
+    buf.set_string(head.right().saturating_sub(4), head.y, "time", dim);
+
+    let rows = tracks
+        .iter()
+        .enumerate()
+        .skip(view.offset)
+        .take(body.height as usize);
+    for (row, (i, t)) in rows.enumerate() {
+        let y = body.y + row as u16;
+        let is_playing = playing == Some(&t.locator);
+        let style = list_row_style(theme, mode, i, view, is_playing);
+        buf.set_style(
+            Rect {
+                x: body.x,
+                y,
+                width: body.width,
+                height: 1,
+            },
+            style,
+        );
+        let sub = if i == view.selected {
+            style
+        } else {
+            style.patch(Style::new().fg(theme.dim))
+        };
+        let num = if numbers {
+            t.track_number.map(|n| n.to_string()).unwrap_or_default()
+        } else {
+            (i + 1).to_string()
+        };
+        let marker = if is_playing { "▶".to_string() } else { num };
+        buf.set_string(body.x, y, rpad(&marker, num_w), sub);
+        buf.set_stringn(
+            body.x + xs[1],
+            y,
+            truncate(&t.title, title_w as usize),
+            title_w as usize,
+            style,
+        );
+        let artist = truncate(&t.artist_line(), artist_w as usize);
+        buf.set_stringn(body.x + xs[2], y, artist, artist_w as usize, sub);
+        if album_col {
+            let album = truncate(t.album.as_deref().unwrap_or(""), album_w as usize);
+            buf.set_stringn(body.x + xs[3], y, album, album_w as usize, sub);
+        }
+        if let Some(d) = t.duration {
+            let s = fmt_time(d);
+            buf.set_string(body.right().saturating_sub(s.len() as u16), y, s, sub);
+        }
+    }
+}
+
+fn draw_albums(buf: &mut Buffer, area: Rect, app: &mut App, snap: &PlayerSnapshot) {
+    let playing = snap.current.as_ref().map(|e| e.track.locator.clone());
+    if let Some((al, _)) = app.lib.open.clone() {
+        // Album page: half-block cover + details, then the tracks.
+        let cover_w = 16u16.min(area.width / 3);
+        let header_h = cover_w / 2 + 1;
+        let cells_area = Rect {
+            width: cover_w,
+            height: cover_w / 2,
+            ..area
+        };
+        if let Some(cells) =
+            app.lib
+                .cover_cells(&app.library, al.cover.as_ref(), cover_w, cover_w / 2)
+        {
+            paint_cells(buf, cells_area, cells);
+        } else {
+            buf.set_style(cells_area, Style::new().bg(app.theme.visual_bg));
+        }
+        let x = area.x + cover_w + 2;
+        let w = area.width.saturating_sub(cover_w + 2) as usize;
+        let t = &app.theme;
+        buf.set_stringn(x, area.y + 1, "ALBUM", w, t.dim());
+        let bold = Style::new().fg(t.fg).add_modifier(Modifier::BOLD);
+        buf.set_stringn(x, area.y + 2, truncate(&al.name, w), w, bold);
+        let mut meta = Vec::new();
+        if let Some(a) = &al.artist {
+            meta.push(a.clone());
+        }
+        if let Some(y) = al.year {
+            meta.push(y.to_string());
+        }
+        meta.push(format!("{} songs", al.tracks));
+        buf.set_stringn(x, area.y + 3, truncate(&meta.join(" · "), w), w, t.dim());
+        buf.set_stringn(
+            x,
+            area.y + 5,
+            "<CR> play · a add · A play next · h back",
+            w,
+            t.dim(),
+        );
+
+        let list = Rect {
+            y: area.y + header_h + 1,
+            height: area.height.saturating_sub(header_h + 1),
+            ..area
+        };
+        let len = app.lib.open.as_ref().map_or(0, |(_, t)| t.len());
+        app.lib.album_view.height = list.height.saturating_sub(1) as usize;
+        app.lib.album_view.scroll_into_view(len);
+        let tracks = &app.lib.open.as_ref().expect("open album").1;
+        let view = &app.lib.album_view;
+        draw_tracks(
+            buf,
+            list,
+            &app.theme,
+            &app.mode,
+            tracks,
+            view,
+            playing.as_ref(),
+            true,
+            false,
+        );
+        return;
+    }
+
+    let len = app.lib.albums.len();
+    if len == 0 {
+        let msg = if app.library.is_scanning() {
+            "scanning your music…"
+        } else {
+            "no albums yet: set [library] music_dirs, or browse files (gb)"
+        };
+        buf.set_stringn(
+            area.x,
+            area.y + 1,
+            msg,
+            area.width as usize,
+            app.theme.dim(),
+        );
+        return;
+    }
+    let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    app.lib.albums_view.height = body.height as usize;
+    app.lib.albums_view.scroll_into_view(len);
+    let t = &app.theme;
+    let w = area.width as usize;
+    let (name_w, artist_w) = (w * 45 / 100, w * 35 / 100);
+    buf.set_string(head.x + 2, head.y, "album", t.dim());
+    buf.set_string(head.x + 2 + name_w as u16, head.y, "artist", t.dim());
+    buf.set_string(
+        head.right().saturating_sub(11),
+        head.y,
+        "year  songs",
+        t.dim(),
+    );
+    let view = &app.lib.albums_view;
+    let playing_album = snap.current.as_ref().and_then(|e| e.track.album.clone());
+    let rows = app
+        .lib
+        .albums
+        .iter()
+        .enumerate()
+        .skip(view.offset)
+        .take(body.height as usize);
+    for (row, (i, al)) in rows.enumerate() {
+        let y = body.y + row as u16;
+        let is_playing = playing_album.as_deref() == Some(al.name.as_str());
+        let style = list_row_style(t, &app.mode, i, view, is_playing);
+        buf.set_style(
+            Rect {
+                x: body.x,
+                y,
+                width: body.width,
+                height: 1,
+            },
+            style,
+        );
+        let sub = if i == view.selected {
+            style
+        } else {
+            style.patch(Style::new().fg(t.dim))
+        };
+        buf.set_string(body.x, y, if is_playing { "▶ " } else { "  " }, style);
+        buf.set_stringn(
+            body.x + 2,
+            y,
+            truncate(&al.name, name_w - 2),
+            name_w - 2,
+            style,
+        );
+        let artist = truncate(al.artist.as_deref().unwrap_or(""), artist_w - 2);
+        buf.set_stringn(body.x + 2 + name_w as u16, y, artist, artist_w - 2, sub);
+        let year = al
+            .year
+            .map(|y| y.to_string())
+            .unwrap_or_else(|| "    ".into());
+        let right = format!("{year}  {:>5}", al.tracks);
+        buf.set_string(
+            body.right().saturating_sub(right.width() as u16),
+            y,
+            right,
+            sub,
+        );
+    }
+}
+
+fn draw_songs(buf: &mut Buffer, area: Rect, app: &mut App, snap: &PlayerSnapshot) {
+    let len = app.lib.songs.len();
+    if len == 0 {
+        let msg = if app.library.is_scanning() {
+            "scanning your music…"
+        } else {
+            "no songs yet"
+        };
+        buf.set_stringn(
+            area.x,
+            area.y + 1,
+            msg,
+            area.width as usize,
+            app.theme.dim(),
+        );
+        return;
+    }
+    app.lib.songs_view.height = area.height.saturating_sub(1) as usize;
+    app.lib.songs_view.scroll_into_view(len);
+    let playing = snap.current.as_ref().map(|e| e.track.locator.clone());
+    let view = &app.lib.songs_view;
+    draw_tracks(
+        buf,
+        area,
+        &app.theme,
+        &app.mode,
+        &app.lib.songs,
+        view,
+        playing.as_ref(),
+        false,
+        true,
+    );
 }
 
 #[cfg(test)]

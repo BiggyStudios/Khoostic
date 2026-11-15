@@ -5,6 +5,7 @@ pub mod app;
 pub mod command;
 pub mod input;
 pub mod keymap;
+pub mod library;
 pub mod theme;
 pub mod ui;
 pub mod visualizer;

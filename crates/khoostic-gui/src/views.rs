@@ -339,9 +339,10 @@ impl Gui {
         load: impl FnOnce(&Gui) -> Vec<Track>,
     ) -> Arc<Vec<Track>> {
         if let Some((v, tracks)) = &self.cache.detail
-            && v == view {
-                return tracks.clone();
-            }
+            && v == view
+        {
+            return tracks.clone();
+        }
         let tracks = Arc::new(load(self));
         self.cache.detail = Some((view.clone(), tracks.clone()));
         self.lists.remove("album");
@@ -868,9 +869,10 @@ impl Gui {
         match self.header_buttons(ui, r, &["Music", "Up", "Add all"]) {
             Some(0) => {
                 if let Some(d) = self.music_dirs.first().cloned()
-                    && self.browser.open(&d).is_ok() {
-                        self.lists.remove("files");
-                    }
+                    && self.browser.open(&d).is_ok()
+                {
+                    self.lists.remove("files");
+                }
             }
             Some(1) => self.files_up(),
             Some(_) => {

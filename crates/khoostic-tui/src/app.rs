@@ -15,6 +15,7 @@ use crate::action::Action;
 use crate::command::{self, Adjust, SeekArg, View};
 use crate::input::{InputResult, LineInput};
 use crate::keymap::{Chord, KeyMode, Keymap, Outcome};
+use crate::library::LibState;
 use crate::theme::Theme;
 use crate::visualizer::Visualizer;
 use khoostic_player::browse::{Browser, EntryKind};
@@ -81,6 +82,7 @@ pub struct App {
     pub queue_view: ListView,
     pub browse_view: ListView,
     pub browser: Browser,
+    pub lib: LibState,
     pub vis: Visualizer,
     pub message: Option<Message>,
     /// Help overlay scroll offset when open.
@@ -118,6 +120,7 @@ impl App {
             queue_view: ListView::default(),
             browse_view: ListView::default(),
             browser: Browser::new(start),
+            lib: LibState::default(),
             vis: Visualizer::default(),
             message: None,
             help: None,
@@ -156,6 +159,7 @@ impl App {
 
     /// Periodic work: player events, key timeouts, message expiry, visualizer physics.
     pub fn tick(&mut self) {
+        self.lib.refresh(&self.library);
         while let Ok(ev) = self.player.events().try_recv() {
             if let PlayerEvent::Error(e) = ev {
                 self.error(e);
@@ -271,6 +275,11 @@ impl App {
     pub fn list_len(&self) -> usize {
         match self.view {
             View::Queue => self.player.queue().read().len(),
+            View::Albums => match &self.lib.open {
+                Some((_, tracks)) => tracks.len(),
+                None => self.lib.albums.len(),
+            },
+            View::Songs => self.lib.songs.len(),
             View::Browse => self.browser.entries().len(),
             View::Visualizer => 0,
         }
@@ -279,6 +288,9 @@ impl App {
     fn list_mut(&mut self) -> &mut ListView {
         match self.view {
             View::Browse => &mut self.browse_view,
+            View::Albums if self.lib.open.is_some() => &mut self.lib.album_view,
+            View::Albums => &mut self.lib.albums_view,
+            View::Songs => &mut self.lib.songs_view,
             _ => &mut self.queue_view,
         }
     }
@@ -286,6 +298,9 @@ impl App {
     pub fn list(&self) -> &ListView {
         match self.view {
             View::Browse => &self.browse_view,
+            View::Albums if self.lib.open.is_some() => &self.lib.album_view,
+            View::Albums => &self.lib.albums_view,
+            View::Songs => &self.lib.songs_view,
             _ => &self.queue_view,
         }
     }
@@ -338,7 +353,9 @@ impl App {
 
             Activate => self.activate(),
             Parent => {
-                if self.view == View::Browse {
+                if self.view == View::Albums {
+                    self.close_album();
+                } else if self.view == View::Browse {
                     match self.browser.parent() {
                         Some(i) => self.browse_view.set(i, self.browser.entries().len()),
                         None => self.info("already at the top"),
@@ -351,11 +368,14 @@ impl App {
                 }
             }
             Append | InsertNext => {
-                if self.view != View::Browse {
-                    self.info("append/insert work in the browser (gb)");
-                    return;
-                }
-                let tracks = self.browser_tracks(n);
+                let tracks = match self.view {
+                    View::Browse => self.browser_tracks(n),
+                    View::Albums | View::Songs => self.lib_tracks(n),
+                    _ => {
+                        self.info("append/insert work in albums, songs and the browser");
+                        return;
+                    }
+                };
                 let was_visual = matches!(self.mode, Mode::Visual { .. });
                 self.mode = Mode::Normal;
                 if tracks.is_empty() {
@@ -379,7 +399,7 @@ impl App {
                 });
                 if !was_visual {
                     // Like ncmpcpp: step past what was just added, ready for the next `a`.
-                    self.browse_view.move_by(n as isize, len);
+                    self.list_mut().move_by(n as isize, len);
                 }
             }
             Delete => {
@@ -414,6 +434,7 @@ impl App {
                         q.entries()[r].iter().map(|e| (*e.track).clone()).collect()
                     }
                     View::Browse => self.browser_tracks(n),
+                    View::Albums | View::Songs => self.lib_tracks(n),
                     View::Visualizer => Vec::new(),
                 };
                 if let Mode::Visual { anchor } = self.mode {
@@ -530,6 +551,13 @@ impl App {
                 self.set_view(View::ALL[(i + step) % View::ALL.len()]);
             }
             ViewQueue => self.set_view(View::Queue),
+            ViewAlbums => {
+                if self.view == View::Albums {
+                    self.close_album();
+                }
+                self.set_view(View::Albums);
+            }
+            ViewSongs => self.set_view(View::Songs),
             ViewBrowse => self.set_view(View::Browse),
             ViewVisualizer => self.set_view(View::Visualizer),
             CycleVisualizer => {
@@ -578,7 +606,51 @@ impl App {
                     }
                 }
             }
+            View::Albums => {
+                let sel = self.lib.album_view.selected;
+                match &self.lib.open {
+                    Some((_, tracks)) if !tracks.is_empty() => {
+                        let tracks = tracks.clone();
+                        self.player.send(Cmd::PlayTracks { tracks, start: sel });
+                    }
+                    Some(_) => {}
+                    None => {
+                        let i = self.lib.albums_view.selected;
+                        self.lib.open_album(&self.library, i);
+                    }
+                }
+            }
+            View::Songs => {
+                if !self.lib.songs.is_empty() {
+                    let tracks = self.lib.songs.clone();
+                    let start = self.lib.songs_view.selected;
+                    self.player.send(Cmd::PlayTracks { tracks, start });
+                }
+            }
             View::Visualizer => self.player.send(Cmd::TogglePause),
+        }
+    }
+
+    fn close_album(&mut self) {
+        if let Some((al, _)) = self.lib.open.take()
+            && let Some(i) = self.lib.albums.iter().position(|a| *a == al)
+        {
+            let len = self.lib.albums.len();
+            self.lib.albums_view.set(i, len);
+        }
+    }
+
+    /// Tracks for the selected rows of the albums/songs views (albums expand to their tracks).
+    fn lib_tracks(&self, count: usize) -> Vec<Track> {
+        let range = self.selection(count);
+        match (self.view, &self.lib.open) {
+            (View::Albums, Some((_, tracks))) => tracks[range].to_vec(),
+            (View::Albums, None) => self.lib.albums[range]
+                .iter()
+                .flat_map(|al| self.library.album_tracks(&al.name, al.artist.as_deref()))
+                .collect(),
+            (View::Songs, _) => self.lib.songs[range].to_vec(),
+            _ => Vec::new(),
         }
     }
 
@@ -610,6 +682,15 @@ impl App {
                 ))
             }
             View::Browse => self.browser.entries().get(index).map(|e| e.name.clone()),
+            View::Albums => match &self.lib.open {
+                Some((_, tracks)) => tracks.get(index).map(track_text),
+                None => self
+                    .lib
+                    .albums
+                    .get(index)
+                    .map(|al| format!("{} {}", al.name, al.artist.as_deref().unwrap_or(""))),
+            },
+            View::Songs => self.lib.songs.get(index).map(track_text),
             View::Visualizer => None,
         }
     }
@@ -772,6 +853,16 @@ fn split_pasted_paths(text: &str) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// Searchable text for a track row.
+fn track_text(t: &Track) -> String {
+    format!(
+        "{} {} {}",
+        t.title,
+        t.artist_line(),
+        t.album.as_deref().unwrap_or("")
+    )
 }
 
 #[cfg(test)]

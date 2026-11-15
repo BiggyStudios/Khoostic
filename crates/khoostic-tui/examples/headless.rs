@@ -25,6 +25,7 @@ fn main() -> anyhow::Result<()> {
     )?;
     let tmp = std::env::temp_dir().join("khoostic-example-lib");
     let library = khoostic_library::Library::open(&tmp.join("lib.db"), &tmp.join("covers"))?;
+    library.scan_blocking(&config.library.music_dirs)?;
     let mut app = App::new(player, library, &config);
     let mut term = Terminal::new(TestBackend::new(100, 24))?;
 
@@ -55,6 +56,17 @@ fn main() -> anyhow::Result<()> {
     };
 
     screen(&mut app, "startup (empty queue)")?;
+    keys(&mut app, "gl");
+    screen(&mut app, "albums")?;
+    keys(&mut app, "2j<CR>");
+    screen(&mut app, "album page (3rd album)")?;
+    keys(&mut app, "<CR>");
+    std::thread::sleep(Duration::from_millis(800));
+    screen(&mut app, "album playing")?;
+    keys(&mut app, "hgs");
+    screen(&mut app, "songs")?;
+    keys(&mut app, ":");
+    typed(&mut app, "clear");
     keys(&mut app, "gb");
     screen(&mut app, "browser")?;
     keys(&mut app, "5a"); // add 5 entries from the cursor

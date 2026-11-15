@@ -73,6 +73,8 @@ actions! {
     NextView = "next_view": "next view",
     PrevView = "prev_view": "previous view",
     ViewQueue = "view_queue": "queue view",
+    ViewAlbums = "view_albums": "albums view",
+    ViewSongs = "view_songs": "songs view",
     ViewBrowse = "view_browse": "browser view",
     ViewVisualizer = "view_visualizer": "visualizer view",
     CycleVisualizer = "cycle_visualizer": "next visualizer style",
