@@ -10,8 +10,10 @@ use khoostic_core::{CoverRef, EntryId, Track, TrackLocator};
 use khoostic_player::{Player, PlayerCommand as Cmd, PlayerSnapshot};
 use khoostic_spotify::{AddOutcome, Pending, Playlist, SearchResults, Status};
 
+use crate::anim::{self, ease_out};
 use crate::app::{Gui, View, count, fmt_long};
 use crate::canvas::{Color, Rect, Weight};
+use crate::icons::{self, Icon};
 use crate::ui::Ui;
 use crate::views::Tile;
 
@@ -236,19 +238,18 @@ impl Gui {
             return y;
         };
         let t = ui.theme.clone();
-        let green = Color::hex("#1db954").unwrap_or(t.accent);
+        let green = Color::hex("#1ed760").unwrap_or(t.accent);
         ui.label(
-            "SPOTIFY",
+            "Spotify",
             r.x + 26.0,
             Rect::new(r.x, y, r.w, 22.0),
             r.w,
-            10.5,
-            Weight::Bold,
-            t.dim.alpha(0.8),
+            11.5,
+            Weight::Medium,
+            t.dim.alpha(0.75),
         );
         y += 26.0;
-        let row = Rect::new(r.x + 12.0, y, r.w - 24.0, 36.0);
-        let hover = ui.hovered(row);
+        let row = Rect::new(r.x + 12.0, y, r.w - 20.0, 36.0);
         let status = sp.status();
         let (label, sub, action): (&str, Option<String>, Option<SpotifyAction>) = match &status {
             Status::Disconnected => ("Connect Spotify", None, Some(|s| s.sign_in())),
@@ -261,49 +262,41 @@ impl Gui {
             Status::Connecting => ("Connecting…", None, None),
             Status::Connected(_) => ("Liked Songs", None, None),
         };
+        let connected = matches!(status, Status::Connected(_));
+        let busy = matches!(status, Status::SigningIn | Status::Connecting);
         let active = self.view == View::Liked;
-        if active || hover {
-            ui.c.rect(
-                row,
-                if active {
-                    t.surface_hover
-                } else {
-                    t.surface_hover.alpha(0.6)
-                },
-                t.radius,
-            );
+        let id = anim::id("nav-spotify");
+        let h = ui.hover_t(id, row);
+        if !active {
+            ui.c.rect(row, t.wash(0.04 * h), t.radius);
         }
-        // Spotify-ish icon: a green disc with three arcs suggested by bars.
-        let ic = Rect::new(row.x + 12.0, row.y + 10.0, 16.0, 16.0);
-        ui.c.circle(
-            ic.x + 8.0,
-            ic.y + 8.0,
-            8.0,
-            if matches!(status, Status::Connected(_)) {
-                green
-            } else {
-                t.dim
-            },
-        );
-        for (i, w) in [9.0, 7.0, 5.0].iter().enumerate() {
-            ui.c.rect(
-                Rect::new(ic.x + 8.0 - w / 2.0, ic.y + 4.5 + i as f32 * 3.0, *w, 1.6),
-                t.surface,
-                0.8,
+        let on = ui.anim.to(id ^ 3, active as u8 as f32, anim::NORMAL);
+        let ic = Rect::new(row.x + 12.0, row.y + 9.0, 18.0, 18.0);
+        if busy {
+            // A spinning arc while the browser / connection is in progress.
+            ui.anim.keep_alive();
+            let a = self.last_spin();
+            ui.c.arc(ic.x + 9.0, ic.y + 9.0, 7.0, a, a + 4.2, 2.0, t.accent);
+        } else if connected {
+            icons::draw(
+                ui.c,
+                Icon::Heart,
+                ic,
+                t.dim.lerp(t.fg, h * 0.6).lerp(green, on.max(0.0)),
             );
-        }
-        let color = if matches!(status, Status::SigningIn | Status::Connecting) {
-            t.accent
-        } else if active {
-            t.fg
         } else {
-            t.dim
+            icons::draw(ui.c, Icon::Spotify, ic, t.dim.lerp(green, h));
+        }
+        let color = if busy {
+            t.accent
+        } else {
+            t.dim.lerp(t.fg, (h * 0.7 + on).min(1.0))
         };
         ui.label(
             label,
-            row.x + 40.0,
+            row.x + 42.0,
             row,
-            row.w - 48.0,
+            row.w - 50.0,
             t.font_size,
             Weight::Medium,
             color,
@@ -316,36 +309,32 @@ impl Gui {
             }
         }
         y += 38.0;
-        if let Some(sub) = sub {
+        let note = match &status {
+            Status::Connected(a) if !a.premium => Some(format!("{} · Premium needed", a.name)),
+            Status::Connected(a) => Some(a.name.clone()),
+            _ => sub,
+        };
+        if let Some(note) = note {
             ui.label(
-                &sub,
-                r.x + 52.0,
-                Rect::new(r.x, y - 4.0, r.w, 18.0),
-                r.w - 64.0,
-                11.0,
+                &note,
+                r.x + 54.0,
+                Rect::new(r.x, y - 6.0, r.w, 18.0),
+                r.w - 66.0,
+                11.5,
                 Weight::Regular,
-                t.dim,
-            );
-            y += 18.0;
-        }
-        if let Status::Connected(a) = &status {
-            let text = if a.premium {
-                a.name.clone()
-            } else {
-                format!("{} · Premium needed to play", a.name)
-            };
-            ui.label(
-                &text,
-                r.x + 52.0,
-                Rect::new(r.x, y - 4.0, r.w, 18.0),
-                r.w - 64.0,
-                11.0,
-                Weight::Regular,
-                t.dim,
+                t.dim.alpha(0.8),
             );
             y += 18.0;
         }
         y + 10.0
+    }
+
+    /// Angle for loading spinners: one turn every ~0.9 s.
+    fn last_spin(&self) -> f32 {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() % 900) as f32;
+        ms / 900.0 * std::f32::consts::TAU
     }
 
     // ---- pages --------------------------------------------------------------------------
@@ -491,7 +480,13 @@ impl Gui {
             let mut labels = vec!["Shuffle", "Add to queue"];
             labels.extend_from_slice(extra_buttons);
             for (i, label) in labels.iter().enumerate() {
-                let (clicked, bw) = ui.pill(label, bx, by + 5.0, false);
+                let icon = match *label {
+                    "Shuffle" => Some(Icon::Shuffle),
+                    "Add to queue" => Some(Icon::Queue),
+                    "Delete" => Some(Icon::Close),
+                    _ => Some(Icon::Plus),
+                };
+                let (clicked, bw) = ui.pill_icon(label, icon, bx, by + 3.0, false);
                 bx += bw + 8.0;
                 if clicked {
                     match i {
@@ -693,7 +688,7 @@ impl Gui {
             )),
             MenuSource::Other => {}
         }
-        items.push(("ADD TO PLAYLIST".into(), None));
+        items.push(("Add to playlist".into(), None));
         let before = items.len();
         for (p, _) in &self.sp.local {
             items.push((p.name.clone(), Some(MenuItem::ToLocal(p.id))));
@@ -716,16 +711,28 @@ impl Gui {
             items.push(("No playlists yet: create one in Playlists".into(), None));
         }
 
-        const W: f32 = 270.0;
-        const IH: f32 = 30.0;
+        const W: f32 = 272.0;
+        const IH: f32 = 32.0;
         let h = items.len() as f32 * IH + 12.0;
         let full = ui.c.bounds();
         let x = menu.pos.0.min(full.w - W - 8.0);
         let y = menu.pos.1.min(full.h - h - 8.0).max(8.0);
         let rect = Rect::new(x, y, W, h);
+        // Opens with a quick fade and a short drop into place.
+        let e = ease_out(menu.opened.elapsed().as_secs_f32() / 0.16);
+        if e < 1.0 {
+            ui.anim.keep_alive();
+        }
         ui.c.set_layer(1);
-        ui.c.glow(rect, Color::BLACK.alpha(0.55), t.radius, 16.0);
-        ui.c.rect(rect, t.surface_hover, t.radius);
+        ui.c.push_fx(0.0, (e - 1.0) * 6.0, e);
+        ui.c.glow(
+            Rect::new(rect.x, rect.y + 6.0, rect.w, rect.h),
+            Color::BLACK.alpha(0.5),
+            12.0,
+            22.0,
+        );
+        ui.c.rect(rect, t.surface_hover, 12.0);
+        ui.c.outline(rect, t.line(), 12.0, 1.0);
         let mut chosen = None;
         for (i, (label, item)) in items.iter().enumerate() {
             let row = Rect::new(x + 6.0, y + 6.0 + i as f32 * IH, W - 12.0, IH);
@@ -733,34 +740,33 @@ impl Gui {
                 None => {
                     ui.label(
                         label,
-                        row.x + 10.0,
+                        row.x + 12.0,
                         row,
-                        row.w - 20.0,
-                        10.5,
-                        Weight::Bold,
-                        t.dim,
+                        row.w - 24.0,
+                        11.5,
+                        Weight::Medium,
+                        t.dim.alpha(0.8),
                     );
                 }
                 Some(_) => {
-                    let hover = ui.hovered(row);
-                    if hover {
-                        ui.c.rect(row, t.accent.alpha(0.16), t.radius - 2.0);
-                    }
+                    let hv = ui.hover_t(anim::id(("menu", i)), row);
+                    ui.c.rect(row, t.fg.alpha(0.06 * hv), 8.0);
                     ui.label(
                         label,
-                        row.x + 10.0,
+                        row.x + 12.0 + 2.0 * hv,
                         row,
-                        row.w - 20.0,
+                        row.w - 24.0,
                         t.font_size - 1.0,
                         Weight::Regular,
-                        if hover { t.fg } else { t.fg.alpha(0.85) },
+                        t.fg.alpha(0.82).lerp(t.fg, hv),
                     );
-                    if hover && ui.input.pressed {
+                    if ui.hovered(row) && ui.input.pressed {
                         chosen = Some(i);
                     }
                 }
             }
         }
+        ui.c.pop_fx();
         ui.c.set_layer(0);
         let clicked_outside = (ui.input.pressed || ui.input.right_pressed)
             && !ui.hovered(rect)
@@ -884,17 +890,20 @@ impl Gui {
             return false;
         }
         let t = ui.theme;
-        let lib_w = ui.measure("Library", t.font_size - 1.0, Weight::Medium) + 24.0;
-        let sp_w = ui.measure("Spotify", t.font_size - 1.0, Weight::Medium) + 24.0;
-        let x = r.right() - lib_w - sp_w - 8.0;
-        if ui.pill("Library", x, r.y + 6.0, !self.search_spotify).0 {
-            self.search_spotify = false;
-        }
-        if ui
-            .pill("Spotify", x + lib_w + 8.0, r.y + 6.0, self.search_spotify)
-            .0
-        {
-            self.search_spotify = true;
+        let seg_w = ui
+            .measure("Library", t.font_size - 1.0, Weight::Medium)
+            .max(ui.measure("Spotify", t.font_size - 1.0, Weight::Medium))
+            + 30.0;
+        let x = r.right() - 2.0 * seg_w - 6.0;
+        let sel = self.search_spotify as usize;
+        if let Some(i) = ui.segmented(
+            anim::id("search-tabs"),
+            x,
+            r.y + 4.0,
+            &["Library", "Spotify"],
+            sel,
+        ) {
+            self.search_spotify = i == 1;
         }
         self.search_spotify
     }
@@ -933,10 +942,19 @@ impl Gui {
                 if x > strip.right() {
                     break;
                 }
-                let cover = Rect::new(x, strip.y, TILE, TILE);
                 let hover = ui.hovered(Rect::new(x, strip.y, TILE, TILE + 48.0));
-                if hover {
-                    ui.c.glow(cover, Color::BLACK.alpha(0.5), t.radius, 12.0);
+                let h = ui
+                    .anim
+                    .to(anim::id(("strip", i)), hover as u8 as f32, anim::FAST);
+                ui.pointer |= hover;
+                let cover = Rect::new(x, strip.y + 4.0 - 4.0 * h, TILE, TILE);
+                if h > 0.01 {
+                    ui.c.glow(
+                        Rect::new(cover.x + 4.0, cover.y + 10.0, cover.w - 8.0, cover.h - 6.0),
+                        Color::BLACK.alpha(0.55 * h),
+                        t.radius,
+                        16.0,
+                    );
                 }
                 ui.cover(
                     cover,

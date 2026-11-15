@@ -54,6 +54,30 @@ fn sd_round_box(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - rr;
 }
 
+fn sd_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+// Distance to a circular arc of radius r from angle a0 to a1 (radians, y down = clockwise).
+fn sd_arc(p: vec2<f32>, r: f32, a0: f32, a1: f32) -> f32 {
+    let tau = 6.28318530718;
+    let span = a1 - a0;
+    if (span >= tau) {
+        return abs(length(p) - r);
+    }
+    var t = atan2(p.y, p.x) - a0;
+    t = t - floor(t / tau) * tau;
+    if (t <= span) {
+        return abs(length(p) - r);
+    }
+    let pa = r * vec2<f32>(cos(a0), sin(a0));
+    let pb = r * vec2<f32>(cos(a1), sin(a1));
+    return min(length(p - pa), length(p - pb));
+}
+
 // Inigo Quilez's exact triangle SDF.
 fn sd_triangle(p: vec2<f32>, p0: vec2<f32>, p1: vec2<f32>, p2: vec2<f32>) -> f32 {
     let e0 = p1 - p0;
@@ -94,6 +118,14 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         case 2u: {
             let h = in.half - vec2<f32>(radius);
             d = sd_triangle(in.local, vec2<f32>(h.x, -h.y), vec2<f32>(h.x, h.y), vec2<f32>(-h.x, 0.0)) - radius;
+        }
+        // 3: round-capped line; endpoints (relative to the center) ride in border_color.
+        case 3u: {
+            d = sd_segment(in.local, in.border_color.xy, in.border_color.zw) - radius;
+        }
+        // 4: arc stroke; border_color = (start angle, end angle, arc radius, _).
+        case 4u: {
+            d = sd_arc(in.local, in.border_color.z, in.border_color.x, in.border_color.y) - radius;
         }
         default: {
             d = sd_round_box(in.local, in.half, radius);

@@ -12,8 +12,10 @@ use khoostic_library::{Album, CoverSize};
 use khoostic_player::browse::EntryKind;
 use khoostic_player::{Player, PlayerCommand as Cmd, PlayerSnapshot};
 
+use crate::anim;
 use crate::app::{Gui, ListState, ROW_H, View, count, fmt_long, fmt_time, local_path};
 use crate::canvas::{Color, Rect, Weight};
+use crate::icons::{self, Icon};
 use crate::ui::{Key, KeyPress, Ui};
 
 /// What a click/key did to a row in a track list.
@@ -69,6 +71,7 @@ impl Gui {
                 self.spotify_album_view(ui, r, player, snap, a, &id, &name)
             }
             View::Liked => self.liked_view(ui, r, player, snap, a),
+            View::Settings => self.settings_view(ui, r, player, snap),
         }
     }
 
@@ -108,9 +111,12 @@ impl Gui {
         let mut x = r.right();
         let mut clicked = None;
         for (i, label) in labels.iter().enumerate().rev() {
-            let w = ui.measure(label, t.font_size - 1.0, Weight::Medium) + 24.0;
+            let icon = button_icon(label);
+            let w = ui.measure(label, t.font_size - 1.0, Weight::Medium)
+                + 32.0
+                + if icon.is_some() { 22.0 } else { 0.0 };
             x -= w;
-            if ui.pill(label, x, r.y + 6.0, false).0 {
+            if ui.pill_icon(label, icon, x, r.y + 4.0, false).0 {
                 clicked = Some(i);
             }
             x -= 8.0;
@@ -130,7 +136,6 @@ impl Gui {
         snap: &PlayerSnapshot,
         a: &AnalysisFrame,
     ) -> RowAction {
-        let t = ui.theme.clone();
         let mut ls = self.lists.get(key).cloned().unwrap_or_default();
         ls.height = r.h;
         ls.clamp(tracks.len(), ROW_H);
@@ -149,11 +154,7 @@ impl Gui {
             let row = Rect::new(r.x, r.y + i as f32 * ROW_H - ls.scroll, r.w, ROW_H - 2.0);
             let hover = ui.hovered(row) && ui.hovered(r);
             let is_playing = playing == Some(&tr.locator);
-            if i == ls.selected {
-                ui.c.rect(row, t.surface_hover, t.radius);
-            } else if hover {
-                ui.c.rect(row, t.surface_hover.alpha(0.5), t.radius);
-            }
+            row_bg(ui, anim::id((key, i)), row, hover, i == ls.selected);
             let num = if style.track_numbers {
                 tr.track_number.map(|n| n.to_string()).unwrap_or_default()
             } else {
@@ -253,6 +254,7 @@ impl Gui {
         if ui.hovered(r) {
             ls.target += ui.input.scroll;
         }
+        let kb = self.kb_nav;
         let (mut open, mut play) = (None, None);
         // Clip a little wider than the grid so selection halos aren't cut off.
         ui.c.push_clip(Rect::new(r.x - 10.0, r.y - 10.0, r.w + 20.0, r.h + 10.0));
@@ -263,18 +265,21 @@ impl Gui {
             let (row, col) = (i / cols, i % cols);
             let x = r.x + col as f32 * (tile + GAP);
             let y = r.y + row as f32 * row_h - ls.scroll;
-            let cover = Rect::new(x, y, tile, tile);
             let tile_rect = Rect::new(x, y, tile, row_h - 10.0);
             let hover = ui.hovered(tile_rect) && ui.hovered(r);
-            if i == ls.selected {
-                ui.c.rect(
-                    Rect::new(x - 8.0, y - 8.0, tile + 16.0, row_h - 2.0),
-                    t.surface_hover.alpha(0.8),
-                    t.radius + 4.0,
+            let id = anim::id((key, i));
+            let h = ui.anim.to(id, hover as u8 as f32, anim::FAST);
+            ui.pointer |= hover;
+            // Hovered covers lift a little onto a soft shadow.
+            let lift = 4.0 * h;
+            let cover = Rect::new(x, y - lift, tile, tile);
+            if h > 0.01 {
+                ui.c.glow(
+                    Rect::new(cover.x + 4.0, cover.y + 10.0, cover.w - 8.0, cover.h - 6.0),
+                    Color::BLACK.alpha(0.55 * h),
+                    t.radius,
+                    16.0,
                 );
-            }
-            if hover {
-                ui.c.glow(cover, Color::BLACK.alpha(0.5), t.radius, 12.0);
             }
             ui.cover(
                 cover,
@@ -283,10 +288,21 @@ impl Gui {
                 t.radius,
                 &al.title,
             );
+            let sel = ui
+                .anim
+                .to(id ^ 1, (kb && i == ls.selected) as u8 as f32, anim::NORMAL);
+            if sel > 0.01 {
+                ui.c.outline(
+                    cover.inset(-4.0, -4.0),
+                    t.accent.alpha(0.55 * sel),
+                    t.radius + 4.0,
+                    1.5,
+                );
+            }
             ui.label(
                 &al.title,
                 x,
-                Rect::new(x, y + tile + 8.0, tile, 22.0),
+                Rect::new(x, y + tile + 10.0, tile, 22.0),
                 tile,
                 t.font_size,
                 Weight::Medium,
@@ -296,30 +312,43 @@ impl Gui {
             ui.label(
                 &sub,
                 x,
-                Rect::new(x, y + tile + 30.0, tile, 20.0),
+                Rect::new(x, y + tile + 31.0, tile, 20.0),
                 tile,
                 t.font_size - 1.5,
                 Weight::Regular,
                 t.dim,
             );
             let mut on_play = false;
-            if hover {
-                // Hover play button in the cover's corner.
-                let b = Rect::new(cover.right() - 54.0, cover.bottom() - 54.0, 44.0, 44.0);
+            if h > 0.01 {
+                // A play button fades and slides up into the cover's corner.
+                let b = Rect::new(
+                    cover.right() - 54.0,
+                    cover.bottom() - 54.0 + 8.0 * (1.0 - h),
+                    44.0,
+                    44.0,
+                );
                 let bh = ui.hovered(b);
-                ui.c.glow(b, Color::BLACK.alpha(0.45), 22.0, 8.0);
+                let bt = ui.anim.to(id ^ 2, bh as u8 as f32, anim::FAST);
+                let rad = 22.0 * (1.0 + 0.07 * bt);
+                // Overlay layer: images draw after shapes within a layer, so this would
+                // otherwise sit under the cover art.
+                ui.c.set_layer(1);
+                ui.c.push_fx(0.0, 0.0, h);
+                ui.c.glow(b, Color::BLACK.alpha(0.5), 22.0, 10.0);
                 ui.c.circle(
                     b.x + 22.0,
                     b.y + 22.0,
-                    22.0,
-                    if bh { t.accent } else { t.accent.alpha(0.92) },
+                    rad,
+                    t.accent.lerp(Color::WHITE, 0.12 * bt),
                 );
-                ui.c.triangle(
-                    Rect::new(b.x + 17.0, b.y + 14.0, 14.0, 16.0),
+                icons::draw(
+                    ui.c,
+                    Icon::Play,
+                    Rect::new(b.x + 12.5, b.y + 12.0, 20.0, 20.0),
                     t.background,
-                    true,
-                    1.5,
                 );
+                ui.c.pop_fx();
+                ui.c.set_layer(0);
                 on_play = bh;
             }
             if hover && ui.input.pressed {
@@ -496,7 +525,7 @@ impl Gui {
         }
         let mut bx = x + 120.0;
         for (i, label) in ["Shuffle", "Add to queue"].iter().enumerate() {
-            let (clicked, bw) = ui.pill(label, bx, by + 5.0, false);
+            let (clicked, bw) = ui.pill_icon(label, button_icon(label), bx, by + 3.0, false);
             bx += bw + 8.0;
             if clicked {
                 if i == 0 {
@@ -542,11 +571,7 @@ impl Gui {
             let ar = &artists[i];
             let row = Rect::new(body.x, body.y + i as f32 * RH - ls.scroll, body.w, RH - 4.0);
             let hover = ui.hovered(row) && ui.hovered(body);
-            if i == ls.selected {
-                ui.c.rect(row, t.surface_hover, t.radius);
-            } else if hover {
-                ui.c.rect(row, t.surface_hover.alpha(0.5), t.radius);
-            }
+            row_bg(ui, anim::id(("artists", i)), row, hover, i == ls.selected);
             let avatar = Rect::new(row.x + 10.0, row.y + 6.0, 48.0, 48.0);
             ui.cover(avatar, ar.cover.as_ref(), CoverSize::Small, 24.0, &ar.name);
             let tx = avatar.right() + 16.0;
@@ -656,7 +681,7 @@ impl Gui {
         }
         let by = r.y + 110.0;
         let play = primary_button(ui, Rect::new(x, by, 108.0, 40.0), "Play");
-        let (shuffle, _) = ui.pill("Shuffle", x + 120.0, by + 5.0, false);
+        let (shuffle, _) = ui.pill_icon("Shuffle", Some(Icon::Shuffle), x + 120.0, by + 3.0, false);
         if play || shuffle {
             let tracks = self.library.artist_tracks(name);
             self.play_list(tracks, player, shuffle);
@@ -770,10 +795,19 @@ impl Gui {
                 if x > strip.right() {
                     break;
                 }
-                let cover = Rect::new(x, strip.y, TILE, TILE);
                 let hover = ui.hovered(Rect::new(x, strip.y, TILE, TILE + 48.0));
-                if hover {
-                    ui.c.glow(cover, Color::BLACK.alpha(0.5), t.radius, 12.0);
+                let h = ui
+                    .anim
+                    .to(anim::id(("strip", i)), hover as u8 as f32, anim::FAST);
+                ui.pointer |= hover;
+                let cover = Rect::new(x, strip.y + 4.0 - 4.0 * h, TILE, TILE);
+                if h > 0.01 {
+                    ui.c.glow(
+                        Rect::new(cover.x + 4.0, cover.y + 10.0, cover.w - 8.0, cover.h - 6.0),
+                        Color::BLACK.alpha(0.55 * h),
+                        t.radius,
+                        16.0,
+                    );
                 }
                 ui.cover(
                     cover,
@@ -833,7 +867,6 @@ impl Gui {
         snap: &PlayerSnapshot,
         a: &AnalysisFrame,
     ) {
-        let t = ui.theme.clone();
         let entries: Vec<_> = player.queue().read().entries().to_vec();
         let total: std::time::Duration = entries.iter().filter_map(|e| e.track.duration).sum();
         let sub = if entries.is_empty() {
@@ -875,11 +908,7 @@ impl Gui {
                 ROW_H - 2.0,
             );
             let hover = ui.hovered(row) && ui.hovered(list);
-            if i == ls.selected {
-                ui.c.rect(row, t.surface_hover, t.radius);
-            } else if hover {
-                ui.c.rect(row, t.surface_hover.alpha(0.5), t.radius);
-            }
+            row_bg(ui, anim::id(("queue", i)), row, hover, i == ls.selected);
             let is_playing = Some(e.id) == playing;
             let mut track = (*e.track).clone();
             if is_playing && track.duration.is_none() {
@@ -971,30 +1000,13 @@ impl Gui {
                 ROW_H - 2.0,
             );
             let hover = ui.hovered(row) && ui.hovered(body);
-            if i == ls.selected {
-                ui.c.rect(row, t.surface_hover, t.radius);
-            } else if hover {
-                ui.c.rect(row, t.surface_hover.alpha(0.5), t.radius);
-            }
-            let icon = Rect::new(row.x + 14.0, row.y + (row.h - 16.0) / 2.0, 18.0, 16.0);
-            match e.kind {
-                EntryKind::Dir => {
-                    ui.c.rect(
-                        Rect::new(icon.x, icon.y, 9.0, 4.0),
-                        t.accent.alpha(0.8),
-                        1.5,
-                    );
-                    ui.c.rect(
-                        Rect::new(icon.x, icon.y + 2.5, icon.w, icon.h - 2.5),
-                        t.accent.alpha(0.8),
-                        3.0,
-                    );
-                }
-                EntryKind::Audio => {
-                    ui.c.circle(icon.x + 6.0, icon.y + 11.0, 4.5, t.dim);
-                    ui.c.rect(Rect::new(icon.x + 9.0, icon.y, 2.0, 11.0), t.dim, 1.0);
-                }
-            }
+            row_bg(ui, anim::id(("files", i)), row, hover, i == ls.selected);
+            let icon = Rect::new(row.x + 14.0, row.y + (row.h - 18.0) / 2.0, 18.0, 18.0);
+            let (glyph, color) = match e.kind {
+                EntryKind::Dir => (Icon::Folder, t.accent.alpha(0.85)),
+                EntryKind::Audio => (Icon::Song, t.dim),
+            };
+            icons::draw(ui.c, glyph, icon, color);
             ui.label(
                 &e.name,
                 row.x + 46.0,
@@ -1135,7 +1147,7 @@ impl Gui {
             ),
             View::Queue => ("queue", player.queue().read().len(), false),
             View::Files => ("files", self.browser.entries().len(), false),
-            View::Visualizer | View::Playlists => return,
+            View::Visualizer | View::Playlists | View::Settings => return,
             View::LocalPlaylist(_)
             | View::SpotifyPlaylist { .. }
             | View::SpotifyAlbum { .. }
@@ -1164,7 +1176,9 @@ impl Gui {
             _ => None,
         };
         if let Some(i) = moved {
+            self.kb_nav = true;
             let i = i.min(len - 1);
+            let ls = self.list(key);
             ls.selected = i;
             let (row, row_h) = if grid {
                 (i / step, ls.height.max(1.0) / 3.0)
@@ -1269,53 +1283,37 @@ pub(crate) fn column_header(ui: &mut Ui, r: Rect, covers: bool, album: bool) -> 
     let cols = Cols::new(r.w, covers, album);
     let row = Rect::new(r.x, r.y, r.w, 24.0);
     let x = r.x + cols.num + cols.cover + 12.0;
-    ui.label_right(
-        "#",
-        r.x + cols.num - 8.0,
-        row,
-        11.0,
-        Weight::Bold,
-        t.dim.alpha(0.8),
-    );
+    let c = t.dim.alpha(0.75);
+    let size = 12.0;
+    ui.label_right("#", r.x + cols.num - 8.0, row, size, Weight::Medium, c);
+    ui.label("Title", x, row, cols.title, size, Weight::Medium, c);
     ui.label(
-        "TITLE",
-        x,
-        row,
-        cols.title,
-        11.0,
-        Weight::Bold,
-        t.dim.alpha(0.8),
-    );
-    ui.label(
-        "ARTIST",
+        "Artist",
         x + cols.title,
         row,
         cols.artist,
-        11.0,
-        Weight::Bold,
-        t.dim.alpha(0.8),
+        size,
+        Weight::Medium,
+        c,
     );
     if album {
-        ui.label(
-            "ALBUM",
-            x + cols.title + cols.artist,
-            row,
-            cols.album,
-            11.0,
-            Weight::Bold,
-            t.dim.alpha(0.8),
-        );
+        let ax = x + cols.title + cols.artist;
+        ui.label("Album", ax, row, cols.album, size, Weight::Medium, c);
     }
-    ui.label_right(
-        "TIME",
-        r.right() - 12.0,
-        row,
-        11.0,
-        Weight::Bold,
-        t.dim.alpha(0.8),
-    );
-    ui.c.rect(Rect::new(r.x, r.y + 28.0, r.w, 1.0), t.surface_hover, 0.0);
-    Rect::new(r.x, r.y + 36.0, r.w, (r.h - 36.0).max(0.0))
+    ui.label_right("Time", r.right() - 14.0, row, size, Weight::Medium, c);
+    ui.c.rect(Rect::new(r.x, r.y + 30.0, r.w, 1.0), t.line(), 0.0);
+    Rect::new(r.x, r.y + 38.0, r.w, (r.h - 38.0).max(0.0))
+}
+
+/// A list row's background: fades in on hover, a little stronger when selected.
+pub(crate) fn row_bg(ui: &mut Ui, id: u64, row: Rect, hover: bool, selected: bool) {
+    let t = ui.theme;
+    let h = ui.anim.to(id, hover as u8 as f32, anim::FAST);
+    let s = ui.anim.to(id ^ 1, selected as u8 as f32, anim::NORMAL);
+    let a = 0.035 * h + 0.065 * s;
+    if a > 0.001 {
+        ui.c.rect(row, t.wash(a), t.radius);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1334,13 +1332,13 @@ fn draw_track_row(
     if playing {
         eq_icon(ui, numr, a, state == PlaybackState::Playing, t.accent);
     } else {
-        ui.label_right(num, numr.right() - 8.0, row, 12.0, Weight::Regular, t.dim);
+        ui.label_right(num, numr.right() - 8.0, row, 12.5, Weight::Regular, t.dim);
     }
     let mut x = row.x + cols.num + 12.0;
     if cols.cover > 0.0 {
-        let c = Rect::new(x - 2.0, row.y + (row.h - 34.0) / 2.0, 34.0, 34.0);
+        let c = Rect::new(x - 2.0, row.y + (row.h - 36.0) / 2.0, 36.0, 36.0);
         let seed = tr.album.as_deref().unwrap_or(&tr.title);
-        ui.cover(c, tr.cover.as_ref(), CoverSize::Small, 5.0, seed);
+        ui.cover(c, tr.cover.as_ref(), CoverSize::Small, 6.0, seed);
         x += cols.cover;
     }
     let title_color = if playing { t.accent } else { t.fg };
@@ -1378,7 +1376,7 @@ fn draw_track_row(
     if let Some(d) = tr.duration {
         ui.label_right(
             &fmt_time(d),
-            row.right() - 12.0,
+            row.right() - 14.0,
             row,
             t.font_size - 1.0,
             Weight::Regular,
@@ -1389,49 +1387,36 @@ fn draw_track_row(
 
 /// The accent-filled main action button.
 pub(crate) fn primary_button(ui: &mut Ui, r: Rect, label: &str) -> bool {
-    let t = ui.theme;
-    let hover = ui.hovered(r);
-    ui.c.rect(
-        r,
-        if hover { t.accent } else { t.accent.alpha(0.9) },
-        r.h / 2.0,
-    );
-    let tri = Rect::new(r.x + 20.0, r.y + r.h / 2.0 - 7.0, 12.0, 14.0);
-    ui.c.triangle(tri, t.background, true, 1.0);
-    ui.label(
-        label,
-        r.x + 42.0,
-        r,
-        r.w - 48.0,
-        t.font_size,
-        Weight::Bold,
-        t.background,
-    );
-    ui.clicked(r)
+    ui.primary_button(r, label)
 }
 
 fn scrollbar(ui: &mut Ui, r: Rect, ls: &ListState, rows: usize) {
     scrollbar_rows(ui, r, ls, rows, ROW_H);
 }
 
+/// A slim scroll indicator that brightens while scrolling or hovered.
 fn scrollbar_rows(ui: &mut Ui, r: Rect, ls: &ListState, rows: usize, row_h: f32) {
     let content = rows as f32 * row_h;
     if content <= r.h {
         return;
     }
-    let h = (r.h * r.h / content).max(24.0);
+    let h = (r.h * r.h / content).max(28.0);
     let y = r.y + (ls.scroll / (content - r.h)) * (r.h - h);
+    let moving = (ls.target - ls.scroll).abs() > 0.5;
+    let near = ui.hovered(Rect::new(r.right() - 20.0, r.y, 40.0, r.h));
+    let id = anim::id(("scrollbar", r.x as i32, r.y as i32));
+    let v = ui.anim.to(id, (moving || near) as u8 as f32, anim::SLOW);
     ui.c.rect(
-        Rect::new(r.right() + 10.0, y, 4.0, h),
-        ui.theme.dim.alpha(0.35),
-        2.0,
+        Rect::new(r.right() + 12.0, y, 3.0, h),
+        ui.theme.fg.alpha(0.12 + 0.2 * v),
+        1.5,
     );
 }
 
 pub(crate) fn empty_state(ui: &mut Ui, r: Rect, title: &str, hint: &str) {
     let t = ui.theme;
     let mid = Rect::new(r.x, r.y + r.h * 0.28, r.w, 30.0);
-    ui.label_center(title, mid, 18.0, Weight::Medium, t.fg.alpha(0.8));
+    ui.label_center(title, mid, 18.0, Weight::Medium, t.fg.alpha(0.85));
     ui.label_center(
         hint,
         Rect {
@@ -1442,47 +1427,6 @@ pub(crate) fn empty_state(ui: &mut Ui, r: Rect, title: &str, hint: &str) {
         Weight::Regular,
         t.dim,
     );
-}
-
-pub(crate) fn nav_icon(ui: &mut Ui, view: &View, r: Rect, color: Color) {
-    match view {
-        View::Albums => {
-            ui.c.outline(Rect::new(r.x, r.y, 16.0, 16.0), color, 3.0, 1.6);
-            ui.c.circle(r.x + 8.0, r.y + 8.0, 2.6, color);
-        }
-        View::Artists => {
-            ui.c.circle(r.x + 8.0, r.y + 5.0, 4.0, color);
-            ui.c.rect(Rect::new(r.x + 1.5, r.y + 10.5, 13.0, 6.0), color, 3.0);
-        }
-        View::Songs => {
-            ui.c.circle(r.x + 5.0, r.y + 12.5, 3.5, color);
-            ui.c.rect(Rect::new(r.x + 7.0, r.y + 1.0, 2.0, 12.0), color, 1.0);
-            ui.c.rect(Rect::new(r.x + 7.0, r.y + 1.0, 8.0, 2.5), color, 1.0);
-        }
-        View::Queue => {
-            for i in 0..3 {
-                let w = if i == 2 { 10.0 } else { 16.0 };
-                ui.c.rect(
-                    Rect::new(r.x, r.y + 2.0 + i as f32 * 5.0, w, 2.5),
-                    color,
-                    1.25,
-                );
-            }
-        }
-        View::Files => {
-            ui.c.rect(Rect::new(r.x, r.y + 1.0, 7.0, 4.0), color, 1.5);
-            ui.c.rect(Rect::new(r.x, r.y + 3.0, 16.0, 12.0), color, 3.0);
-        }
-        _ => {
-            for (i, h) in [8.0, 14.0, 5.0, 11.0].iter().enumerate() {
-                ui.c.rect(
-                    Rect::new(r.x + i as f32 * 4.5, r.bottom() - h, 2.5, *h),
-                    color,
-                    1.25,
-                );
-            }
-        }
-    }
 }
 
 /// Little animated equalizer shown next to the playing track.
@@ -1503,29 +1447,6 @@ fn eq_icon(ui: &mut Ui, r: Rect, a: &AnalysisFrame, playing: bool, color: Color)
     }
 }
 
-pub(crate) fn speaker_icon(ui: &mut Ui, r: Rect, volume: f32, color: Color) {
-    ui.c.rect(Rect::new(r.x, r.y + 5.0, 4.0, 6.0), color, 1.0);
-    ui.c.triangle(
-        Rect::new(r.x + 1.0, r.y + 2.0, 7.0, 12.0),
-        color,
-        false,
-        0.5,
-    );
-    for (i, th) in [0.05f32, 0.5].iter().enumerate() {
-        let h = 6.0 + i as f32 * 5.0;
-        let c = if volume > *th {
-            color
-        } else {
-            color.alpha(0.25)
-        };
-        ui.c.rect(
-            Rect::new(r.x + 10.0 + i as f32 * 3.5, r.y + 8.0 - h / 2.0, 2.0, h),
-            c,
-            1.0,
-        );
-    }
-}
-
 pub(crate) fn album_of(track: &Track) -> String {
     if let Some(a) = &track.album {
         return a.clone();
@@ -1541,4 +1462,18 @@ pub(crate) fn album_of(track: &Track) -> String {
 #[allow(dead_code)]
 fn is_local(t: &Track) -> bool {
     matches!(t.locator, TrackLocator::Local(_))
+}
+
+/// The icon that goes with a common action label.
+pub(crate) fn button_icon(label: &str) -> Option<Icon> {
+    Some(match label {
+        "Shuffle" | "Shuffle all" => Icon::Shuffle,
+        "Play all" => Icon::Play,
+        "Add to queue" | "Add all" => Icon::Queue,
+        "Clear" | "Delete" => Icon::Close,
+        "Music" => Icon::Folder,
+        "Up" => Icon::Up,
+        "New playlist" | "Copy to Khoostic" => Icon::Plus,
+        _ => return None,
+    })
 }

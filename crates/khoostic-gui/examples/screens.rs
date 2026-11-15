@@ -116,6 +116,9 @@ fn main() -> anyhow::Result<()> {
         .into_iter()
         .take(4)
         .collect();
+    for p in library.playlists() {
+        library.delete_playlist(p.id)?;
+    }
     library.create_playlist("Road trip", &some)?;
     h.frame(&keys(&[Key::Char('3')]), &player)?;
     let row = Input {
@@ -126,5 +129,14 @@ fn main() -> anyhow::Result<()> {
     shot(&mut h, "sp-menu", &row)?;
     h.frame(&keys(&[Key::Escape]), &player)?;
     shot(&mut h, "sp-playlists", &click(100.0, 280.0, false))?;
+    shot(&mut h, "settings", &click(100.0, 670.0, false))?;
+    shot(&mut h, "visualizer", &keys(&[Key::Char('6')]))?;
+    h.frame(&keys(&[Key::Char('1')]), &player)?;
+    let hover = |x: f32, y: f32| Input {
+        mouse: Some((x, y)),
+        ..Default::default()
+    };
+    shot(&mut h, "hover-tile", &hover(560.0, 200.0))?;
+    shot(&mut h, "hover-seek", &hover(560.0, 774.0))?;
     Ok(())
 }

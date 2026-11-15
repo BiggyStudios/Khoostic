@@ -178,6 +178,8 @@ pub enum Shape {
     Box = 0,
     TriangleRight = 1,
     TriangleLeft = 2,
+    Line = 3,
+    Arc = 4,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +229,15 @@ pub struct Layer {
 /// Two layers are enough for a minimal UI: the page, and overlays (tooltips, toasts) above it.
 pub const LAYERS: usize = 2;
 
+/// A translation and opacity applied to everything drawn while it is pushed (page transitions,
+/// fading menus). Hit-testing is unaffected; effects are short-lived.
+#[derive(Debug, Clone, Copy)]
+struct Fx {
+    dx: f32,
+    dy: f32,
+    alpha: f32,
+}
+
 pub struct Canvas {
     pub scale: f32,
     /// Logical size.
@@ -235,6 +246,7 @@ pub struct Canvas {
     pub layers: [Layer; LAYERS],
     layer: usize,
     clip: Vec<Rect>,
+    fx: Vec<Fx>,
 }
 
 impl Canvas {
@@ -247,6 +259,11 @@ impl Canvas {
             layers: Default::default(),
             layer: 0,
             clip: vec![Rect::new(0.0, 0.0, size.0, size.1)],
+            fx: vec![Fx {
+                dx: 0.0,
+                dy: 0.0,
+                alpha: 1.0,
+            }],
         }
     }
 
@@ -258,7 +275,33 @@ impl Canvas {
         self.layer = layer.min(LAYERS - 1);
     }
 
+    /// Translates by `(dx, dy)` and multiplies opacity by `alpha` until [`Canvas::pop_fx`].
+    pub fn push_fx(&mut self, dx: f32, dy: f32, alpha: f32) {
+        let cur = self.cur();
+        self.fx.push(Fx {
+            dx: cur.dx + dx,
+            dy: cur.dy + dy,
+            alpha: cur.alpha * alpha.clamp(0.0, 1.0),
+        });
+    }
+
+    pub fn pop_fx(&mut self) {
+        if self.fx.len() > 1 {
+            self.fx.pop();
+        }
+    }
+
+    fn cur(&self) -> Fx {
+        *self.fx.last().expect("root fx")
+    }
+
+    fn moved(&self, r: Rect) -> Rect {
+        let f = self.cur();
+        Rect::new(r.x + f.dx, r.y + f.dy, r.w, r.h)
+    }
+
     pub fn push_clip(&mut self, r: Rect) {
+        let r = self.moved(r);
         let current = *self.clip.last().expect("root clip");
         self.clip.push(current.intersect(&r));
     }
@@ -273,6 +316,24 @@ impl Canvas {
         let c = self.clip.last().expect("root clip");
         let s = self.scale;
         [c.x * s, c.y * s, c.right() * s, c.bottom() * s]
+    }
+
+    fn push_quad(&mut self, r: Rect, top: Color, bottom: Color, data: [f32; 4], params: [f32; 4]) {
+        let a = self.cur().alpha;
+        if a <= 0.0 {
+            return;
+        }
+        let r = self.moved(r);
+        let s = self.scale;
+        let quad = Quad {
+            rect: [r.x * s, r.y * s, r.w * s, r.h * s],
+            color_top: top.alpha(a).linear(),
+            color_bottom: bottom.alpha(a).linear(),
+            border_color: data,
+            params,
+            clip: self.clip_px(),
+        };
+        self.layers[self.layer].quads.push(quad);
     }
 
     pub fn shape(
@@ -290,15 +351,9 @@ impl Canvas {
         }
         let s = self.scale;
         let (bw, bc) = border.unwrap_or((0.0, Color::TRANSPARENT));
-        let quad = Quad {
-            rect: [r.x * s, r.y * s, r.w * s, r.h * s],
-            color_top: top.linear(),
-            color_bottom: bottom.linear(),
-            border_color: bc.linear(),
-            params: [radius * s, bw * s, shape as u32 as f32, blur * s],
-            clip: self.clip_px(),
-        };
-        self.layers[self.layer].quads.push(quad);
+        let bc = bc.alpha(self.cur().alpha).linear();
+        let params = [radius * s, bw * s, shape as u32 as f32, blur * s];
+        self.push_quad(r, top, bottom, bc, params);
     }
 
     pub fn rect(&mut self, r: Rect, color: Color, radius: f32) {
@@ -340,17 +395,74 @@ impl Canvas {
         self.shape(r, color, color, rounding, None, shape, 0.0);
     }
 
+    /// A round-capped stroke from `a` to `b`.
+    pub fn line(&mut self, a: (f32, f32), b: (f32, f32), width: f32, color: Color) {
+        if color.a <= 0.0 || width <= 0.0 {
+            return;
+        }
+        let pad = width / 2.0 + 1.0;
+        let (x0, y0) = (a.0.min(b.0) - pad, a.1.min(b.1) - pad);
+        let (x1, y1) = (a.0.max(b.0) + pad, a.1.max(b.1) + pad);
+        let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let s = self.scale;
+        let data = [
+            (a.0 - cx) * s,
+            (a.1 - cy) * s,
+            (b.0 - cx) * s,
+            (b.1 - cy) * s,
+        ];
+        let params = [width / 2.0 * s, 0.0, Shape::Line as u32 as f32, 0.0];
+        self.push_quad(
+            Rect::new(x0, y0, x1 - x0, y1 - y0),
+            color,
+            color,
+            data,
+            params,
+        );
+    }
+
+    /// Strokes through `points` with round joins.
+    pub fn polyline(&mut self, points: &[(f32, f32)], width: f32, color: Color) {
+        for w in points.windows(2) {
+            self.line(w[0], w[1], width, color);
+        }
+    }
+
+    /// A round-capped arc stroke around `(cx, cy)` from angle `a0` to `a1` (radians; 0 points
+    /// right, positive turns clockwise on screen). `a1 - a0 >= 2π` draws a ring.
+    pub fn arc(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        a0: f32,
+        a1: f32,
+        width: f32,
+        color: Color,
+    ) {
+        if color.a <= 0.0 || width <= 0.0 || radius <= 0.0 {
+            return;
+        }
+        let ext = radius + width / 2.0 + 1.0;
+        let s = self.scale;
+        let data = [a0, a1, radius * s, 0.0];
+        let params = [width / 2.0 * s, 0.0, Shape::Arc as u32 as f32, 0.0];
+        let r = Rect::new(cx - ext, cy - ext, ext * 2.0, ext * 2.0);
+        self.push_quad(r, color, color, data, params);
+    }
+
     /// Draws a GPU image (see [`crate::images::ImageStore`]) with rounded corners.
     pub fn image(&mut self, r: Rect, image: crate::images::ImageId, radius: f32, opacity: f32) {
         if r.w <= 0.0 || r.h <= 0.0 {
             return;
         }
+        let r = self.moved(r);
         let s = self.scale;
         let cmd = ImageCmd {
             image,
             rect: [r.x * s, r.y * s, r.w * s, r.h * s],
             radius: radius * s,
-            opacity,
+            opacity: opacity * self.cur().alpha,
             clip: self.clip_px(),
         };
         self.layers[self.layer].images.push(cmd);
@@ -367,20 +479,23 @@ impl Canvas {
         weight: Weight,
         color: Color,
     ) {
+        let f = self.cur();
+        if f.alpha <= 0.0 {
+            return;
+        }
         let s = self.scale;
         let clip = *self.clip.last().expect("root clip");
         self.layers[self.layer].texts.push(TextCmd {
             text: text.into(),
-            x: x * s,
-            y: y * s,
+            x: (x + f.dx) * s,
+            y: (y + f.dy) * s,
             size: size * s,
             weight,
-            color,
+            color: color.alpha(f.alpha),
             clip: Rect::new(clip.x * s, clip.y * s, clip.w * s, clip.h * s),
         });
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

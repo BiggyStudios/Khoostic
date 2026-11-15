@@ -119,10 +119,12 @@ impl Gpu {
 
 fn pick_present_mode(modes: &[wgpu::PresentMode], vsync: bool) -> wgpu::PresentMode {
     use wgpu::PresentMode::*;
+    // Frames are paced by the event loop (the fps setting), so prefer a present mode that
+    // never blocks: mailbox is tear-free; FIFO is the always-available fallback.
     let prefs: &[wgpu::PresentMode] = if vsync {
-        &[Fifo]
+        &[Mailbox, Fifo]
     } else {
-        &[Mailbox, Immediate, Fifo]
+        &[Immediate, Mailbox, Fifo]
     };
     prefs
         .iter()

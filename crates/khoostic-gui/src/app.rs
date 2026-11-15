@@ -1,5 +1,5 @@
 //! The GUI's state, navigation, chrome (sidebar, now-playing bar) and input handling.
-//! Content pages live in `views.rs`.
+//! Content pages live in `views.rs`, `spotify_views.rs` and `settings.rs`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,20 +7,26 @@ use std::time::{Duration, Instant};
 
 use khoostic_audio::{AnalysisFrame, PlaybackState};
 use khoostic_config::Config;
-use khoostic_core::{RepeatMode, Track, TrackLocator};
+use khoostic_core::{EntryId, RepeatMode, Track, TrackLocator};
 use khoostic_library::{Album, Artist, CoverSize, Library, TrackOrder};
 use khoostic_player::browse::Browser;
 use khoostic_player::{Player, PlayerCommand as Cmd, PlayerSnapshot};
 
+use crate::anim::{self, Anims, ease_out};
 use crate::canvas::{Canvas, Color, Rect, Weight};
+use crate::icons::{self, Icon};
 use crate::images::ImageStore;
 use crate::text::TextSystem;
 use crate::ui::{Input, Key, TextField, Theme, Ui};
 
-pub(crate) const SIDEBAR_W: f32 = 224.0;
-pub(crate) const BAR_H: f32 = 92.0;
-pub(crate) const ROW_H: f32 = 46.0;
+pub(crate) const SIDEBAR_W: f32 = 236.0;
+pub(crate) const BAR_H: f32 = 96.0;
+pub(crate) const ROW_H: f32 = 48.0;
 pub(crate) const PAD: f32 = 32.0;
+/// Space between the content panel and the window edges.
+const GAP: f32 = 8.0;
+/// How long a page takes to fade in after navigating.
+const PAGE_FADE: f32 = 0.22;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
@@ -47,6 +53,7 @@ pub enum View {
         name: String,
     },
     Liked,
+    Settings,
 }
 
 impl View {
@@ -62,16 +69,16 @@ impl View {
     }
 }
 
-const LIBRARY_NAV: [(View, &str); 4] = [
-    (View::Albums, "Albums"),
-    (View::Artists, "Artists"),
-    (View::Songs, "Songs"),
-    (View::Playlists, "Playlists"),
+const LIBRARY_NAV: [(View, &str, Icon); 4] = [
+    (View::Albums, "Albums", Icon::Album),
+    (View::Artists, "Artists", Icon::Artist),
+    (View::Songs, "Songs", Icon::Song),
+    (View::Playlists, "Playlists", Icon::Playlist),
 ];
-const PLAYER_NAV: [(View, &str); 3] = [
-    (View::Queue, "Queue"),
-    (View::Files, "Files"),
-    (View::Visualizer, "Visualizer"),
+const PLAYER_NAV: [(View, &str, Icon); 3] = [
+    (View::Queue, "Queue", Icon::Queue),
+    (View::Files, "Files", Icon::Folder),
+    (View::Visualizer, "Visualizer", Icon::Visualizer),
 ];
 
 /// Scroll position + selection of a list or grid. Rows have a fixed height per view.
@@ -107,7 +114,7 @@ impl ListState {
             self.scroll = self.target;
             return false;
         }
-        self.scroll += diff * (dt * 18.0).min(1.0);
+        self.scroll += diff * (1.0 - (-16.0 * dt).exp());
         true
     }
 }
@@ -115,7 +122,7 @@ impl ListState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Drag {
     Seek(f32),
-    Volume,
+    Volume(f32),
 }
 
 /// Library query results, refreshed when the library's version changes.
@@ -128,6 +135,61 @@ pub(crate) struct LibCache {
     /// Tracks of the currently open album/artist page.
     pub detail: Option<(View, Arc<Vec<Track>>)>,
     pub search: Option<(String, Arc<Vec<Track>>)>,
+}
+
+/// The playback position as shown: continuous between the engine's (buffer-sized) updates,
+/// and held at a seek target until the engine gets there, so the bar never snaps back.
+#[derive(Default)]
+pub(crate) struct PlayClock {
+    entry: Option<EntryId>,
+    pos: f64,
+    hold: Option<(f64, Instant)>,
+    /// Drawn fill fraction of the seek bar; glides across jumps.
+    pub bar: f32,
+}
+
+impl PlayClock {
+    fn update(&mut self, snap: &PlayerSnapshot, dt: f32) {
+        let id = snap.current.as_ref().map(|e| e.id);
+        let actual = snap.position.as_secs_f64();
+        if id != self.entry {
+            self.entry = id;
+            self.pos = actual;
+            self.hold = None;
+            return;
+        }
+        if let Some((target, at)) = self.hold {
+            if (actual - target).abs() < 0.75 || at.elapsed() > Duration::from_secs(2) {
+                self.hold = None;
+            } else {
+                self.pos = target;
+                return;
+            }
+        }
+        if snap.state == PlaybackState::Playing {
+            self.pos += dt as f64;
+            let err = actual - self.pos;
+            if err.abs() > 0.4 {
+                self.pos = actual; // a seek or a stall: jump (the bar eases separately)
+            } else {
+                self.pos += err * (dt as f64 * 6.0).min(1.0);
+            }
+        } else {
+            self.pos = actual;
+        }
+        if let Some(d) = snap.duration {
+            self.pos = self.pos.clamp(0.0, d.as_secs_f64());
+        }
+    }
+
+    pub fn position(&self) -> Duration {
+        Duration::from_secs_f64(self.pos.max(0.0))
+    }
+
+    fn seeked(&mut self, to: Duration) {
+        self.pos = to.as_secs_f64();
+        self.hold = Some((self.pos, Instant::now()));
+    }
 }
 
 pub struct Gui {
@@ -154,11 +216,28 @@ pub struct Gui {
     pub(crate) mouse: (f32, f32),
     /// Search shows Spotify results instead of the library.
     pub(crate) search_spotify: bool,
+    anims: Anims,
+    /// The view the page transition last started for.
+    shown_view: View,
+    view_since: Instant,
+    pub(crate) clock: PlayClock,
+    /// Volume to restore when unmuting from the speaker button.
+    unmute_to: f32,
+    /// Frame rates (focused, unfocused) the window loop paces to.
+    pub fps: u32,
+    pub background_fps: u32,
+    pub(crate) config_path: Option<PathBuf>,
+    /// Measured frames per second while animating.
+    pub(crate) measured_fps: f32,
+    /// The keyboard moved the selection last (show focus rings); cleared by clicking.
+    pub(crate) kb_nav: bool,
 }
 
 pub struct FrameResult {
     /// Something is moving; keep rendering at full rate.
     pub animating: bool,
+    /// The pointer is over something clickable.
+    pub pointer: bool,
 }
 
 /// Mutable rendering services a frame needs.
@@ -205,6 +284,16 @@ impl Gui {
             menu: None,
             mouse: (0.0, 0.0),
             search_spotify: false,
+            anims: Anims::default(),
+            shown_view: View::Albums,
+            view_since: Instant::now() - Duration::from_secs(1),
+            clock: PlayClock::default(),
+            unmute_to: 0.8,
+            fps: g.fps.clamp(10, 360),
+            background_fps: g.background_fps.clamp(1, 360),
+            config_path: config.source.clone(),
+            measured_fps: 0.0,
+            kb_nav: false,
         };
         (gui, problems)
     }
@@ -275,15 +364,23 @@ impl Gui {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
+        if dt > 0.0 && dt < 0.2 {
+            let inst = 1.0 / dt;
+            self.measured_fps += (inst - self.measured_fps) * 0.1;
+        }
         let images_changed = gfx.images.poll();
         self.refresh_library();
         self.poll_spotify();
         if let Some(m) = input.mouse {
             self.mouse = m;
         }
+        if input.pressed {
+            self.kb_nav = false;
+        }
 
         let snap = player.snapshot();
         let analysis = player.analysis();
+        self.clock.update(&snap, dt);
         if !self.search.focused && self.menu.is_none() {
             self.handle_keys(input, player);
         }
@@ -291,10 +388,16 @@ impl Gui {
             self.back();
         }
         self.handle_drops(input, player);
+        if self.view != self.shown_view {
+            self.shown_view = self.view.clone();
+            self.view_since = now;
+        }
 
         let theme = self.theme.clone();
         let library = self.library.clone();
         let fetch = self.fetch.clone();
+        let mut anims = std::mem::take(&mut self.anims);
+        anims.begin(dt);
         let mut ui = Ui {
             c: canvas,
             text: gfx.text,
@@ -303,6 +406,8 @@ impl Gui {
             fetch: fetch.as_ref(),
             input,
             theme: &theme,
+            anim: anims,
+            pointer: false,
         };
         // While a menu is open, the page underneath must not react to its clicks.
         let masked = Input {
@@ -318,45 +423,56 @@ impl Gui {
         }
         let full = ui.c.bounds();
         let (body, bar) = full.split_bottom(BAR_H);
-        let (sidebar, main) = body.split_left(SIDEBAR_W);
+        let (sidebar, rest) = body.split_left(SIDEBAR_W);
+        let panel = Rect::new(rest.x, rest.y + GAP, rest.w - GAP, rest.h - GAP);
 
-        self.sidebar(&mut ui, sidebar, player, &snap);
+        self.sidebar(&mut ui, sidebar, player);
+        ui.c.rect(panel, theme.surface, 16.0);
         let main = Rect::new(
-            main.x + PAD,
-            main.y + PAD - 4.0,
-            main.w - 2.0 * PAD,
-            main.h - PAD - 8.0,
+            panel.x + PAD,
+            panel.y + PAD - 4.0,
+            panel.w - 2.0 * PAD,
+            panel.h - PAD - 4.0,
         );
+        // New pages fade in and settle up into place.
+        let age = self.view_since.elapsed().as_secs_f32();
+        let e = ease_out(age / PAGE_FADE);
+        if e < 1.0 {
+            ui.anim.keep_alive();
+        }
+        ui.c.push_clip(panel);
+        ui.c.push_fx(0.0, (1.0 - e) * 14.0, e);
         self.content(&mut ui, main, player, &snap, &analysis, dt);
+        ui.c.pop_fx();
+        ui.c.pop_clip();
         self.now_playing(&mut ui, bar, player, &snap, &analysis);
         ui.input = input;
         self.draw_menu(&mut ui, player);
-        self.draw_toast(&mut ui, full);
+        self.draw_toast(&mut ui, panel);
 
         let mut scrolling = false;
         for l in self.lists.values_mut() {
             scrolling |= l.step(dt);
         }
+        let pointer = ui.pointer;
         let animating = snap.state == PlaybackState::Playing
+            || ui.anim.moving()
             || scrolling
             || images_changed
             || ui.images.is_loading()
             || self.drag.is_some()
             || self.toast.is_some()
-            || self.search.focused
             || self.library.is_scanning()
             || self.spotify_busy()
-            || self.menu.is_some()
             || analysis.bands.iter().any(|&b| b > 0.0);
+        self.anims = std::mem::take(&mut ui.anim);
         if input.released {
             self.drag = None;
         }
         if std::mem::take(&mut self.focus_search) {
             self.search.focused = true;
         }
-        FrameResult {
-            animating: animating || self.search.focused,
-        }
+        FrameResult { animating, pointer }
     }
 
     fn handle_drops(&mut self, input: &Input, player: &Player) {
@@ -383,6 +499,7 @@ impl Gui {
                 Key::Left => player.send(Cmd::SeekBy(if k.shift { -30_000 } else { -5_000 })),
                 Key::Char('/') => self.focus_search = true,
                 Key::Char('f') if k.ctrl => self.focus_search = true,
+                Key::Char(',') if k.ctrl => self.switch(View::Settings),
                 Key::Backspace | Key::Escape if self.view != View::Files => {
                     self.back();
                 }
@@ -423,20 +540,23 @@ impl Gui {
         }
     }
 
-    fn sidebar(&mut self, ui: &mut Ui, r: Rect, player: &Player, snap: &PlayerSnapshot) {
+    // ---- sidebar ----------------------------------------------------------------------------
+
+    fn sidebar(&mut self, ui: &mut Ui, r: Rect, player: &Player) {
         let t = ui.theme.clone();
-        ui.c.rect(r, t.surface, 0.0);
+        let mark = Rect::new(r.x + 24.0, r.y + 18.0, r.w, 34.0);
+        ui.c.circle(mark.x + 4.0, mark.y + mark.h / 2.0, 4.0, t.accent);
         ui.label(
             "khoostic",
-            r.x + 24.0,
-            Rect::new(r.x, r.y + 16.0, r.w, 40.0),
+            mark.x + 16.0,
+            mark,
             r.w,
-            20.0,
+            18.0,
             Weight::Bold,
-            t.accent,
+            t.fg,
         );
 
-        let field = Rect::new(r.x + 14.0, r.y + 64.0, r.w - 28.0, 36.0);
+        let field = Rect::new(r.x + 16.0, r.y + 66.0, r.w - 24.0, 38.0);
         let was_empty = self.search.text.is_empty();
         if ui.text_field(&mut self.search, field, "Search") {
             if self.search.text.trim().is_empty() {
@@ -453,111 +573,115 @@ impl Gui {
             self.list("search").selected = 0;
         }
 
-        let mut y = r.y + 122.0;
+        // Lay out every row first so the selection indicator can glide between them.
+        struct NavRow {
+            view: View,
+            label: String,
+            icon: Icon,
+            rect: Rect,
+            badge: Option<String>,
+        }
         let queue_len = player.queue().read().len();
-        for (title, items) in [("LIBRARY", &LIBRARY_NAV[..]), ("PLAYING", &PLAYER_NAV[..])] {
+        let mut rows: Vec<NavRow> = Vec::new();
+        let mut headers: Vec<(&str, f32)> = Vec::new();
+        let mut y = r.y + 124.0;
+        for (title, items) in [("Library", &LIBRARY_NAV[..]), ("Playing", &PLAYER_NAV[..])] {
+            headers.push((title, y));
+            y += 26.0;
+            for (view, name, icon) in items {
+                let badge = match view {
+                    View::Queue if queue_len > 0 => Some(queue_len.to_string()),
+                    _ => None,
+                };
+                rows.push(NavRow {
+                    view: view.clone(),
+                    label: name.to_string(),
+                    icon: *icon,
+                    rect: Rect::new(r.x + 12.0, y, r.w - 20.0, 36.0),
+                    badge,
+                });
+                y += 38.0;
+            }
+            y += 16.0;
+        }
+        let spotify_y = y;
+        let settings = Rect::new(r.x + 12.0, r.bottom() - 52.0, r.w - 20.0, 36.0);
+        rows.push(NavRow {
+            view: View::Settings,
+            label: "Settings".into(),
+            icon: Icon::Settings,
+            rect: settings,
+            badge: None,
+        });
+        let active = self.view.section();
+        let liked_rect = Rect::new(r.x + 12.0, spotify_y + 26.0, r.w - 20.0, 36.0);
+        let target = rows
+            .iter()
+            .find(|row| row.view == active)
+            .map(|row| row.rect.y)
+            .or((active == View::Liked).then_some(liked_rect.y));
+        if let Some(ty) = target {
+            let iy = ui.anim.to(anim::id("nav-y"), ty, 18.0);
+            ui.c.rect(
+                Rect::new(r.x + 12.0, iy, r.w - 20.0, 36.0),
+                t.wash(0.075),
+                t.radius,
+            );
+        }
+        for (title, hy) in headers {
             ui.label(
                 title,
                 r.x + 26.0,
-                Rect::new(r.x, y, r.w, 22.0),
+                Rect::new(r.x, hy, r.w, 22.0),
                 r.w,
-                10.5,
-                Weight::Bold,
-                t.dim.alpha(0.8),
+                11.5,
+                Weight::Medium,
+                t.dim.alpha(0.75),
             );
-            y += 26.0;
-            for (view, name) in items.iter() {
-                let row = Rect::new(r.x + 12.0, y, r.w - 24.0, 36.0);
-                let active = self.view.section() == *view;
-                let hover = ui.hovered(row);
-                if active || hover {
-                    ui.c.rect(
-                        row,
-                        if active {
-                            t.surface_hover
-                        } else {
-                            t.surface_hover.alpha(0.6)
-                        },
-                        t.radius,
-                    );
-                }
-                let icon_color = if active { t.accent } else { t.dim };
-                crate::views::nav_icon(
-                    ui,
-                    view,
-                    Rect::new(row.x + 12.0, row.y + 10.0, 16.0, 16.0),
-                    icon_color,
-                );
-                ui.label(
-                    name,
-                    row.x + 40.0,
-                    row,
-                    row.w - 80.0,
-                    t.font_size,
-                    Weight::Medium,
-                    if active { t.fg } else { t.dim },
-                );
-                let badge = match view {
-                    View::Queue if queue_len > 0 => Some(queue_len.to_string()),
-                    View::Albums if !self.cache.albums.is_empty() => {
-                        Some(self.cache.albums.len().to_string())
-                    }
-                    _ => None,
-                };
-                if let Some(b) = badge {
-                    ui.label_right(
-                        &b,
-                        row.right() - 12.0,
-                        row,
-                        11.0,
-                        Weight::Regular,
-                        t.dim.alpha(0.8),
-                    );
-                }
-                if ui.clicked(row) {
-                    self.search.focused = false;
-                    self.switch(view.clone());
-                }
-                y += 38.0;
-            }
-            y += 14.0;
         }
-        self.sidebar_spotify(ui, r, y);
-
-        let foot = Rect::new(r.x + 24.0, r.bottom() - 56.0, r.w - 36.0, 20.0);
-        let scanning = self.library.is_scanning();
-        let status = if scanning {
-            "Scanning library…".to_string()
-        } else {
-            format!(
-                "{} · {}",
-                count(self.cache.songs.len(), "song"),
-                count(self.cache.albums.len(), "album")
-            )
-        };
-        ui.label(
-            &status,
-            foot.x,
-            foot,
-            foot.w,
-            12.0,
-            Weight::Regular,
-            if scanning { t.accent } else { t.dim },
-        );
-        let info = format!("{} · {} Hz", snap.device, snap.sample_rate);
-        ui.label(
-            &info,
-            foot.x,
-            Rect {
-                y: foot.y + 20.0,
-                ..foot
-            },
-            foot.w,
-            11.0,
-            Weight::Regular,
-            t.dim.alpha(0.7),
-        );
+        for row in &rows {
+            let is_active = row.view == active;
+            let id = anim::id(("nav", &row.label));
+            let h = ui.hover_t(id, row.rect);
+            if !is_active {
+                ui.c.rect(row.rect, t.wash(0.04 * h), t.radius);
+            }
+            let on = ui.anim.to(id ^ 3, is_active as u8 as f32, anim::NORMAL);
+            let icon_color = t.dim.lerp(t.fg, h * 0.6).lerp(t.accent, on);
+            icons::draw(
+                ui.c,
+                row.icon,
+                Rect::new(row.rect.x + 12.0, row.rect.y + 9.0, 18.0, 18.0),
+                icon_color,
+            );
+            ui.label(
+                &row.label,
+                row.rect.x + 42.0,
+                row.rect,
+                row.rect.w - 80.0,
+                t.font_size,
+                Weight::Medium,
+                t.dim.lerp(t.fg, (h * 0.7 + on).min(1.0)),
+            );
+            if let Some(b) = &row.badge {
+                ui.label_right(
+                    b,
+                    row.rect.right() - 12.0,
+                    row.rect,
+                    11.5,
+                    Weight::Medium,
+                    t.dim.alpha(0.8),
+                );
+            }
+            if ui.clicked(row.rect) {
+                self.search.focused = false;
+                self.switch(row.view.clone());
+            }
+        }
+        self.sidebar_spotify(ui, r, spotify_y);
     }
+
+    // ---- now playing bar ----------------------------------------------------------------------
 
     fn now_playing(
         &mut self,
@@ -568,37 +692,26 @@ impl Gui {
         a: &AnalysisFrame,
     ) {
         let t = ui.theme.clone();
-        ui.c.rect(r, t.surface, 0.0);
-        ui.c.rect(Rect::new(r.x, r.y, r.w, 1.0), t.background, 0.0);
 
         // Left: cover + title/artist (click to open the album).
-        let art = Rect::new(r.x + 16.0, r.y + (r.h - 62.0) / 2.0, 62.0, 62.0);
-        let info_w = (r.w * 0.26).min(320.0);
+        let art = Rect::new(r.x + 18.0, r.y + (r.h - 60.0) / 2.0, 60.0, 60.0);
+        let info_w = (r.w * 0.26).min(300.0);
         let tx = art.right() + 14.0;
         match &snap.current {
             Some(e) => {
                 let seed = e.track.album.as_deref().unwrap_or(&e.track.title);
-                ui.c.glow(
-                    art,
-                    t.gradient(0.5).alpha(0.15 + 0.35 * a.bass),
-                    t.radius,
-                    10.0,
-                );
-                ui.cover(
-                    art,
-                    e.track.cover.as_ref(),
-                    CoverSize::Large,
-                    t.radius,
-                    seed,
-                );
-                let title_row = Rect::new(tx, r.y + 24.0, info_w, 24.0);
+                let clickable = Rect::new(art.x, art.y, info_w + 76.0, art.h);
+                let h = ui.hover_t(anim::id("np-art"), clickable);
+                let beat = ui.anim.to(anim::id("np-bass"), a.bass, 18.0);
+                ui.c.glow(art, t.gradient(0.5).alpha(0.08 + 0.3 * beat), 10.0, 12.0);
+                ui.cover(art, e.track.cover.as_ref(), CoverSize::Large, 8.0, seed);
                 ui.label(
                     &e.track.title,
                     tx,
-                    title_row,
+                    Rect::new(tx, r.y + 26.0, info_w, 22.0),
                     info_w,
-                    t.font_size + 1.0,
-                    Weight::Bold,
+                    t.font_size + 0.5,
+                    Weight::Medium,
                     t.fg,
                 );
                 let sub = match e.track.artist_line() {
@@ -608,20 +721,25 @@ impl Gui {
                 ui.label(
                     &sub,
                     tx,
-                    Rect::new(tx, r.y + 48.0, info_w, 22.0),
+                    Rect::new(tx, r.y + 49.0, info_w, 20.0),
                     info_w,
-                    t.font_size - 1.0,
+                    t.font_size - 1.5,
                     Weight::Regular,
-                    t.dim,
+                    t.dim.lerp(t.fg, 0.4 * h),
                 );
-                let clickable = Rect::new(art.x, art.y, info_w + 76.0, art.h);
                 if ui.clicked(clickable) {
                     let track = (*e.track).clone();
                     self.open_album_of(&track);
                 }
             }
             None => {
-                ui.cover(art, None, CoverSize::Large, t.radius, "khoostic");
+                ui.c.rect(art, t.wash(0.05), 8.0);
+                icons::draw(
+                    ui.c,
+                    Icon::Song,
+                    Rect::new(art.x + 19.0, art.y + 19.0, 22.0, 22.0),
+                    t.dim.alpha(0.6),
+                );
                 ui.label(
                     "Nothing playing",
                     tx,
@@ -634,66 +752,82 @@ impl Gui {
             }
         }
 
-        // Center: transport + seek bar.
-        let center_w = (r.w - 2.0 * (info_w + 120.0)).clamp(240.0, 620.0);
+        // Center: transport.
         let cx = r.x + r.w / 2.0;
-        let play = Rect::new(cx - 19.0, r.y + 12.0, 38.0, 38.0);
-        let play_hover = ui.hovered(play);
-        ui.c.circle(
-            cx,
-            play.y + 19.0,
-            19.0,
-            if play_hover { t.fg } else { t.fg.alpha(0.92) },
-        );
-        if snap.state == PlaybackState::Playing {
-            ui.c.rect(
-                Rect::new(cx - 6.0, play.y + 12.0, 4.0, 14.0),
-                t.surface,
-                1.5,
-            );
-            ui.c.rect(
-                Rect::new(cx + 2.0, play.y + 12.0, 4.0, 14.0),
-                t.surface,
-                1.5,
-            );
-        } else {
-            ui.c.triangle(
-                Rect::new(cx - 5.0, play.y + 11.0, 14.0, 16.0),
-                t.surface,
-                true,
-                1.5,
-            );
+        let cy = r.y + 32.0;
+        let playing = snap.state == PlaybackState::Playing;
+        let play = Rect::new(cx - 20.0, cy - 20.0, 40.0, 40.0);
+        let pid = anim::id("np-play");
+        let h = ui.hover_t(pid, play);
+        let p = ui.press_t(pid, play);
+        let rad = 19.0 * (1.0 + 0.06 * h - 0.08 * p);
+        ui.c.circle(cx, cy, rad, t.fg);
+        let morph = ui.anim.to(pid ^ 5, playing as u8 as f32, 20.0);
+        let s = 18.0 * (1.0 - 0.08 * p);
+        let icon_r = Rect::new(cx - s / 2.0, cy - s / 2.0, s, s);
+        let ink = t.background;
+        if morph < 0.999 {
+            ui.c.push_fx(0.0, 0.0, 1.0 - morph);
+            icons::draw(ui.c, Icon::Play, icon_r, ink);
+            ui.c.pop_fx();
+        }
+        if morph > 0.001 {
+            ui.c.push_fx(0.0, 0.0, morph);
+            icons::draw(ui.c, Icon::Pause, icon_r, ink);
+            ui.c.pop_fx();
         }
         if ui.clicked(play) {
             player.send(Cmd::TogglePause);
         }
-        for (dir, dx) in [(false, -52.0), (true, 52.0)] {
-            let b = Rect::new(cx + dx - 14.0, play.y + 5.0, 28.0, 28.0);
-            let col = if ui.hovered(b) { t.fg } else { t.dim };
-            let (tri, bar) = if dir {
-                (
-                    Rect::new(b.x + 7.0, b.y + 8.0, 11.0, 12.0),
-                    Rect::new(b.x + 18.0, b.y + 8.0, 2.5, 12.0),
-                )
-            } else {
-                (
-                    Rect::new(b.x + 10.0, b.y + 8.0, 11.0, 12.0),
-                    Rect::new(b.x + 7.5, b.y + 8.0, 2.5, 12.0),
-                )
-            };
-            ui.c.triangle(tri, col, dir, 1.0);
-            ui.c.rect(bar, col, 1.0);
-            if ui.clicked(b) {
-                player.send(if dir { Cmd::Next } else { Cmd::Prev });
+        let (dim, fg, accent) = (t.dim, t.fg, t.accent);
+        if ui.icon_button(
+            anim::id("np-prev"),
+            Icon::Prev,
+            (cx - 50.0, cy),
+            20.0,
+            fg.alpha(0.85),
+            fg,
+        ) {
+            player.send(Cmd::Prev);
+        }
+        if ui.icon_button(
+            anim::id("np-next"),
+            Icon::Next,
+            (cx + 50.0, cy),
+            20.0,
+            fg.alpha(0.85),
+            fg,
+        ) {
+            player.send(Cmd::Next);
+        }
+        let toggles = [
+            (Icon::Shuffle, snap.shuffle, -96.0, Cmd::ToggleShuffle),
+            (
+                if snap.repeat == RepeatMode::One {
+                    Icon::RepeatOne
+                } else {
+                    Icon::Repeat
+                },
+                snap.repeat != RepeatMode::Off,
+                96.0,
+                Cmd::CycleRepeat,
+            ),
+        ];
+        for (icon, on, dx, cmd) in toggles {
+            let id = anim::id(("np-toggle", dx as i32));
+            let o = ui.anim.to(id ^ 9, on as u8 as f32, anim::NORMAL);
+            let base = dim.lerp(accent, o);
+            if ui.icon_button(id, icon, (cx + dx, cy), 18.0, base, fg.lerp(accent, o)) {
+                player.send(cmd);
+            }
+            if o > 0.01 {
+                ui.c.circle(cx + dx, cy + 15.0, 2.0 * o, accent.alpha(o));
             }
         }
 
-        let seek = Rect::new(
-            cx - center_w / 2.0 + 44.0,
-            r.y + 62.0,
-            center_w - 88.0,
-            16.0,
-        );
+        // Seek bar.
+        let bar_w = (r.w - 2.0 * (info_w + 140.0)).clamp(240.0, 560.0);
+        let seek = Rect::new(cx - bar_w / 2.0, r.y + 62.0, bar_w, 18.0);
         let dur = snap.duration.unwrap_or_default();
         let frac_at = |x: f32| ((x - seek.x) / seek.w).clamp(0.0, 1.0);
         if ui.clicked(seek) && !dur.is_zero() {
@@ -702,42 +836,44 @@ impl Gui {
         if let (Some(Drag::Seek(_)), Some((mx, _))) = (self.drag, ui.input.mouse) {
             self.drag = Some(Drag::Seek(frac_at(mx)));
             if ui.input.released {
-                player.send(Cmd::Seek(dur.mul_f32(frac_at(mx))));
+                let to = dur.mul_f32(frac_at(mx));
+                player.send(Cmd::Seek(to));
+                self.clock.seeked(to);
             }
         }
-        let frac = match self.drag {
-            Some(Drag::Seek(f)) => f,
-            _ if dur.is_zero() => 0.0,
-            _ => (snap.position.as_secs_f32() / dur.as_secs_f32()).clamp(0.0, 1.0),
+        let (frac, shown) = match self.drag {
+            Some(Drag::Seek(f)) => (f, dur.mul_f32(f)),
+            _ if dur.is_zero() => (0.0, Duration::ZERO),
+            _ => {
+                let pos = self.clock.position().min(dur);
+                (pos.as_secs_f32() / dur.as_secs_f32(), pos)
+            }
         };
-        let shown = match self.drag {
-            Some(Drag::Seek(f)) => dur.mul_f32(f),
-            _ => snap.position,
-        };
-        let track = Rect::new(seek.x, seek.y + 6.0, seek.w, 4.0);
-        ui.c.rect(track, t.dim.alpha(0.3), 2.0);
-        ui.c.rect(
-            Rect {
-                w: track.w * frac,
-                ..track
-            },
-            t.accent,
-            2.0,
-        );
-        if ui.hovered(seek) || matches!(self.drag, Some(Drag::Seek(_))) {
-            ui.c.circle(track.x + track.w * frac, track.y + 2.0, 6.0, t.fg);
+        // Follow small, continuous motion exactly; glide across jumps (seeks, track changes).
+        let dragging = matches!(self.drag, Some(Drag::Seek(_)));
+        let jump = (frac - self.clock.bar).abs() * seek.w;
+        if dragging || jump < 2.0 {
+            self.clock.bar = frac;
+        } else {
+            self.clock.bar += (frac - self.clock.bar) * (1.0 - (-18.0 * ui.anim.dt()).exp());
+            ui.anim.keep_alive();
         }
-        let times = Rect::new(seek.x - 50.0, seek.y, 42.0, seek.h);
+        let sid = anim::id("np-seek");
+        let hot = ui.hovered(seek) || dragging;
+        ui.pointer |= hot;
+        let hs = ui.anim.to(sid, hot as u8 as f32, anim::FAST);
+        draw_slider(ui, seek, self.clock.bar, hs, t.fg.lerp(t.accent, hs));
+        let times = Rect::new(seek.x - 54.0, seek.y, 44.0, seek.h);
         ui.label_right(
             &fmt_time(shown),
             times.right(),
             times,
-            11.0,
+            11.5,
             Weight::Regular,
             t.dim,
         );
         let end = if dur.is_zero() {
-            "--:--".to_string()
+            "–:––".to_string()
         } else {
             fmt_time(dur)
         };
@@ -746,83 +882,117 @@ impl Gui {
             seek.right() + 10.0,
             seek,
             50.0,
-            11.0,
+            11.5,
             Weight::Regular,
             t.dim,
         );
 
-        // Right: shuffle, repeat, volume.
-        let vol = Rect::new(r.right() - 140.0, r.y + (r.h - 16.0) / 2.0, 110.0, 16.0);
-        let vtrack = Rect::new(vol.x, vol.y + 6.0, vol.w, 4.0);
+        // Right: queue, volume.
+        let vol = Rect::new(r.right() - 132.0, r.y + (r.h - 18.0) / 2.0, 104.0, 18.0);
+        let vid = anim::id("np-vol");
         if ui.clicked(vol) {
-            self.drag = Some(Drag::Volume);
+            self.drag = Some(Drag::Volume(frac_vol(vol, ui.input.mouse)));
         }
-        if let (Some(Drag::Volume), Some((mx, _))) = (self.drag, ui.input.mouse) {
-            player.send(Cmd::SetVolume(((mx - vol.x) / vol.w).clamp(0.0, 1.0)));
+        if let Some(Drag::Volume(_)) = self.drag {
+            let v = frac_vol(vol, ui.input.mouse);
+            self.drag = Some(Drag::Volume(v));
+            player.send(Cmd::SetVolume(v));
         }
         if ui.hovered(vol) && ui.input.scroll != 0.0 {
             player.send(Cmd::VolumeBy(-ui.input.scroll.signum() * 0.05));
         }
-        ui.c.rect(vtrack, t.dim.alpha(0.3), 2.0);
-        ui.c.rect(
-            Rect {
-                w: vtrack.w * snap.volume,
-                ..vtrack
-            },
-            t.fg.alpha(0.8),
-            2.0,
-        );
-        if ui.hovered(vol) || self.drag == Some(Drag::Volume) {
-            ui.c.circle(vtrack.x + vtrack.w * snap.volume, vtrack.y + 2.0, 6.0, t.fg);
-        }
-        crate::views::speaker_icon(
-            ui,
-            Rect::new(vol.x - 28.0, vol.y, 16.0, 16.0),
-            snap.volume,
-            t.dim,
-        );
-
-        let mut x = vol.x - 40.0;
-        let repeat = match snap.repeat {
-            RepeatMode::Off => "Repeat",
-            RepeatMode::All => "Repeat all",
-            RepeatMode::One => "Repeat one",
+        let volume = match self.drag {
+            Some(Drag::Volume(v)) => v,
+            _ => snap.volume,
         };
-        for (label, active, cmd) in [
-            (repeat, snap.repeat != RepeatMode::Off, Cmd::CycleRepeat),
-            ("Shuffle", snap.shuffle, Cmd::ToggleShuffle),
-        ] {
-            let w = ui.measure(label, t.font_size - 1.0, Weight::Medium) + 24.0;
-            x -= w + 6.0;
-            let (clicked, _) = ui.pill(label, x, r.y + (r.h - 30.0) / 2.0, active);
-            if clicked {
-                player.send(cmd);
+        let shown_vol = ui.anim.to(vid ^ 4, volume, 24.0);
+        let hot = ui.hovered(vol) || matches!(self.drag, Some(Drag::Volume(_)));
+        ui.pointer |= hot;
+        let hv = ui.anim.to(vid, hot as u8 as f32, anim::FAST);
+        draw_slider(ui, vol, shown_vol, hv, t.fg.lerp(t.accent, hv));
+        if ui.icon_button(
+            anim::id("np-mute"),
+            Icon::Volume(volume),
+            (vol.x - 22.0, vol.y + vol.h / 2.0),
+            18.0,
+            dim,
+            fg,
+        ) {
+            if volume > 0.001 {
+                self.unmute_to = volume;
+                player.send(Cmd::SetVolume(0.0));
+            } else {
+                player.send(Cmd::SetVolume(self.unmute_to.max(0.05)));
+            }
+        }
+        let on_queue = self.view == View::Queue;
+        let qc = if on_queue { accent } else { dim };
+        if ui.icon_button(
+            anim::id("np-queue"),
+            Icon::Queue,
+            (vol.x - 64.0, vol.y + vol.h / 2.0),
+            18.0,
+            qc,
+            if on_queue { accent } else { fg },
+        ) {
+            if on_queue {
+                self.back();
+            } else {
+                self.navigate(View::Queue);
             }
         }
     }
 
-    fn draw_toast(&mut self, ui: &mut Ui, full: Rect) {
+    fn draw_toast(&mut self, ui: &mut Ui, panel: Rect) {
         let Some((msg, at)) = &self.toast else { return };
         let age = at.elapsed().as_secs_f32();
-        if age > 3.0 {
+        const LIFE: f32 = 3.2;
+        if age > LIFE {
             self.toast = None;
             return;
         }
-        let alpha = (3.0 - age).min(1.0) * (age * 6.0).min(1.0);
+        let appear = ease_out(age / 0.25);
+        let alpha = appear * ((LIFE - age) / 0.35).min(1.0);
         let t = ui.theme;
-        let w = ui.measure(msg, t.font_size, Weight::Medium) + 36.0;
+        let w = ui.measure(msg, t.font_size, Weight::Medium) + 40.0;
         let r = Rect::new(
-            SIDEBAR_W + (full.w - SIDEBAR_W - w) / 2.0,
-            full.h - BAR_H - 64.0,
+            panel.x + (panel.w - w) / 2.0,
+            panel.bottom() - 64.0 + (1.0 - appear) * 16.0,
             w,
-            40.0,
+            42.0,
         );
         ui.c.set_layer(1);
-        ui.c.glow(r, Color::BLACK.alpha(0.5 * alpha), 20.0, 14.0);
-        ui.c.rect(r, t.surface_hover.alpha(alpha), 20.0);
+        ui.c.glow(r, Color::BLACK.alpha(0.45 * alpha), 21.0, 18.0);
+        ui.c.rect(r, t.surface_hover.alpha(alpha), 21.0);
+        ui.c.outline(r, t.line().alpha(alpha), 21.0, 1.0);
         let msg = msg.clone();
         ui.label_center(&msg, r, t.font_size, Weight::Medium, t.fg.alpha(alpha));
         ui.c.set_layer(0);
+    }
+}
+
+fn frac_vol(vol: Rect, mouse: Option<(f32, f32)>) -> f32 {
+    ((mouse.unwrap_or_default().0 - vol.x) / vol.w).clamp(0.0, 1.0)
+}
+
+/// A thin track with a fill and a knob that grows in on hover (`hot` 0..1).
+pub(crate) fn draw_slider(ui: &mut Ui, r: Rect, frac: f32, hot: f32, fill: Color) {
+    let t = ui.theme;
+    let th = 4.0 + 2.0 * hot;
+    let track = Rect::new(r.x, r.y + (r.h - th) / 2.0, r.w, th);
+    ui.c.rect(track, t.wash(0.14), th / 2.0);
+    let fw = (track.w * frac.clamp(0.0, 1.0)).max(th);
+    ui.c.rect(Rect { w: fw, ..track }, fill, th / 2.0);
+    if hot > 0.01 {
+        let x = track.x + track.w * frac.clamp(0.0, 1.0);
+        let cy = track.y + th / 2.0;
+        ui.c.glow(
+            Rect::new(x - 6.0 * hot, cy - 6.0 * hot, 12.0 * hot, 12.0 * hot),
+            Color::BLACK.alpha(0.4 * hot),
+            6.0,
+            4.0,
+        );
+        ui.c.circle(x, cy, 6.5 * hot, t.fg);
     }
 }
 
@@ -854,5 +1024,65 @@ pub(crate) fn local_path(t: &Track) -> Option<&std::path::Path> {
     match &t.locator {
         TrackLocator::Local(p) => Some(p),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use khoostic_core::QueueEntry;
+
+    fn snap(pos: f64, state: PlaybackState, id: u64) -> PlayerSnapshot {
+        PlayerSnapshot {
+            state,
+            current: Some(QueueEntry {
+                id: EntryId(id),
+                track: Arc::new(Track::default()),
+            }),
+            position: Duration::from_secs_f64(pos),
+            duration: Some(Duration::from_secs(200)),
+            volume: 1.0,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            buffered: Duration::ZERO,
+            sample_rate: 48_000,
+            device: String::new(),
+        }
+    }
+
+    #[test]
+    fn clock_is_smooth_between_coarse_updates() {
+        let mut c = PlayClock::default();
+        c.update(&snap(10.0, PlaybackState::Playing, 1), 0.0);
+        // The engine reports in 20 ms steps; we render at 120 fps.
+        let mut last = c.pos;
+        for i in 1..=60 {
+            let engine = 10.0 + ((i as f64 / 120.0) / 0.02).floor() * 0.02;
+            c.update(&snap(engine, PlaybackState::Playing, 1), 1.0 / 120.0);
+            assert!(c.pos > last, "position must keep moving forward");
+            assert!((c.pos - engine).abs() < 0.05);
+            last = c.pos;
+        }
+    }
+
+    #[test]
+    fn seek_target_is_held_until_the_engine_arrives() {
+        let mut c = PlayClock::default();
+        c.update(&snap(10.0, PlaybackState::Playing, 1), 0.0);
+        c.seeked(Duration::from_secs(120));
+        // The engine still reports the old position for a few frames.
+        c.update(&snap(10.02, PlaybackState::Playing, 1), 0.016);
+        assert_eq!(c.position(), Duration::from_secs(120));
+        c.update(&snap(120.01, PlaybackState::Playing, 1), 0.016);
+        assert!(c.hold.is_none());
+        assert!((c.pos - 120.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn new_track_resets_the_clock() {
+        let mut c = PlayClock::default();
+        c.update(&snap(150.0, PlaybackState::Playing, 1), 0.0);
+        c.update(&snap(0.0, PlaybackState::Playing, 2), 0.016);
+        assert!(c.pos < 0.01);
     }
 }

@@ -3,12 +3,15 @@
 // Drawing calls naturally take position, size, style and color together.
 #![allow(clippy::too_many_arguments)]
 
+pub mod anim;
 pub mod app;
 pub mod canvas;
 pub mod gpu;
+pub mod icons;
 pub mod images;
 pub mod painter;
 pub mod renderer;
+pub mod settings;
 pub mod spotify_views;
 pub mod text;
 pub mod ui;
@@ -23,10 +26,10 @@ use khoostic_library::Library;
 use khoostic_player::{Player, PlayerCommand, PlayerEvent};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::app::Gui;
 use crate::canvas::Canvas;
@@ -34,7 +37,10 @@ use crate::gpu::{Gpu, WindowSurface};
 use crate::renderer::Renderer;
 use crate::ui::{Input, Key, KeyPress};
 
-const IDLE_REDRAW: Duration = Duration::from_millis(250);
+/// Redraw interval when nothing moves (clock text, toasts expiring).
+const IDLE_REDRAW: Duration = Duration::from_millis(500);
+/// Wake-up interval while minimized (no drawing).
+const HIDDEN_TICK: Duration = Duration::from_secs(1);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Pixels scrolled per wheel notch.
 const WHEEL_STEP: f32 = 84.0;
@@ -66,6 +72,14 @@ pub fn run(
         animating: true,
         error: None,
         last_title: String::new(),
+        focused: true,
+        occluded: false,
+        dirty: true,
+        last_frame: Instant::now(),
+        frame_due: Instant::now(),
+        pointer: false,
+        frames: 0,
+        stats_since: Instant::now(),
     };
     if !problems.is_empty() {
         app.gui.toast(problems.join("; "));
@@ -95,6 +109,20 @@ struct WinitApp {
     animating: bool,
     error: Option<anyhow::Error>,
     last_title: String,
+    focused: bool,
+    /// Covered or minimized: nothing is drawn.
+    occluded: bool,
+    /// Input arrived since the last frame.
+    dirty: bool,
+    last_frame: Instant,
+    /// When the next animation frame is due. Advanced by fixed steps so wake-up latency
+    /// doesn't accumulate into a lower frame rate.
+    frame_due: Instant,
+    /// The hand cursor is showing.
+    pointer: bool,
+    /// Frames drawn since `stats_since` (debug log of the real frame rate).
+    frames: u32,
+    stats_since: Instant,
 }
 
 impl WinitApp {
@@ -106,16 +134,76 @@ impl WinitApp {
         os * self.config.gui.scale.clamp(0.5, 4.0)
     }
 
-    fn redraw(&mut self) {
-        let scale = self.scale();
-        let Some(ws) = self.window.as_mut() else {
-            return;
+    /// Nothing on screen to draw: minimized, fully covered, or zero-sized.
+    fn hidden(&self) -> bool {
+        let Some(ws) = &self.window else { return true };
+        self.occluded
+            || ws.window.is_minimized() == Some(true)
+            || ws.surface.config.width == 0
+            || ws.surface.config.height == 0
+    }
+
+    /// Time between frames while something animates.
+    fn frame_interval(&self) -> Duration {
+        let fps = if self.focused {
+            self.gui.fps
+        } else {
+            self.gui.background_fps
         };
+        Duration::from_secs_f64(1.0 / fps.max(1) as f64)
+    }
+
+    /// Work that must continue while hidden: player errors and the window title.
+    fn background_tick(&mut self) {
         while let Ok(ev) = self.player.events().try_recv() {
             if let PlayerEvent::Error(e) = ev {
                 self.gui.toast(e);
             }
         }
+        self.update_title();
+    }
+
+    fn update_title(&mut self) {
+        let Some(ws) = self.window.as_ref() else {
+            return;
+        };
+        let title = match self.player.snapshot().current {
+            Some(e) => format!("{} — Khoostic", e.track.title),
+            None => "Khoostic".to_string(),
+        };
+        if title != self.last_title {
+            ws.window.set_title(&title);
+            self.last_title = title;
+        }
+    }
+
+    fn redraw(&mut self) {
+        let now = Instant::now();
+        let interval = self.frame_interval();
+        self.frame_due += interval;
+        if self.frame_due + interval < now || self.frame_due > now + interval {
+            // Idle for a while (or the rate changed): restart the cadence from now.
+            self.frame_due = now + interval;
+        }
+        self.last_frame = now;
+        self.dirty = false;
+        self.frames += 1;
+        let span = self.stats_since.elapsed();
+        if span >= Duration::from_secs(2) {
+            tracing::debug!(
+                fps = self.frames as f32 / span.as_secs_f32(),
+                focused = self.focused,
+                animating = self.animating,
+                "frame rate"
+            );
+            self.frames = 0;
+            self.stats_since = Instant::now();
+        }
+        self.background_tick();
+        let scale = self.scale();
+        let Some(ws) = self.window.as_mut() else {
+            return;
+        };
         let size = (ws.surface.config.width, ws.surface.config.height);
         let mut canvas = Canvas::new(size, scale, self.gui.theme.background);
         let result = self.gui.frame(
@@ -129,14 +217,13 @@ impl WinitApp {
         );
         self.animating = result.animating;
         self.input.end_frame();
-
-        let title = match self.player.snapshot().current {
-            Some(e) => format!("{} — Khoostic", e.track.title),
-            None => "Khoostic".to_string(),
-        };
-        if title != self.last_title {
-            ws.window.set_title(&title);
-            self.last_title = title;
+        if result.pointer != self.pointer {
+            self.pointer = result.pointer;
+            ws.window.set_cursor(if result.pointer {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            });
         }
 
         let frame = match ws.surface.surface.get_current_texture() {
@@ -250,29 +337,31 @@ impl ApplicationHandler for WinitApp {
         }
     }
 
-    fn new_events(&mut self, _: &ActiveEventLoop, cause: StartCause) {
-        if let StartCause::ResumeTimeReached { .. } = cause
-            && let Some(ws) = &self.window
-        {
-            ws.window.request_redraw();
-        }
-    }
-
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         let scale = self.scale();
-        let mut wake = true;
+        // Input only marks the frame dirty; `about_to_wait` decides when to draw, so a
+        // 1000 Hz mouse can't push rendering past the frame-rate cap.
+        let mut dirty = true;
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 if let Some(ws) = self.window.as_mut() {
                     ws.surface
                         .resize(&ws.renderer.gpu.device, size.width, size.height);
+                    // Draw right away so live resizing doesn't smear.
+                    if size.width > 0 && size.height > 0 {
+                        ws.window.request_redraw();
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.redraw();
-                wake = false;
+                if !self.hidden() {
+                    self.redraw();
+                }
+                dirty = false;
             }
+            WindowEvent::Focused(f) => self.focused = f,
+            WindowEvent::Occluded(o) => self.occluded = o,
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.mouse = Some((position.x as f32 / scale, position.y as f32 / scale));
             }
@@ -313,21 +402,34 @@ impl ApplicationHandler for WinitApp {
                 self.key(&event.logical_key);
             }
             WindowEvent::DroppedFile(path) => self.input.dropped.push(path),
-            _ => wake = false,
+            _ => dirty = false,
         }
-        if wake && let Some(ws) = &self.window {
-            ws.window.request_redraw();
-        }
+        self.dirty |= dirty;
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(ws) = &self.window else { return };
-        if self.animating {
-            // With FIFO present this paces to the display's refresh rate.
-            ws.window.request_redraw();
+        if self.window.is_none() {
+            return;
+        }
+        let now = Instant::now();
+        if self.hidden() {
+            // Minimized/covered: no frames at all, just keep the title and errors current.
+            self.background_tick();
+            event_loop.set_control_flow(ControlFlow::WaitUntil(now + HIDDEN_TICK));
+            return;
+        }
+        let next = if self.dirty || self.animating {
+            self.frame_due
+        } else {
+            self.last_frame + IDLE_REDRAW
+        };
+        if now >= next {
+            if let Some(ws) = &self.window {
+                ws.window.request_redraw();
+            }
             event_loop.set_control_flow(ControlFlow::Wait);
         } else {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + IDLE_REDRAW));
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
         }
     }
 }
@@ -367,17 +469,22 @@ impl Headless {
     /// input) until cover art has finished loading, so captures are complete.
     pub fn frame(&mut self, input: &Input, player: &Player) -> anyhow::Result<Vec<u8>> {
         let mut input = input.clone();
-        for _ in 0..200 {
+        // After loading finishes, keep going long enough for fades and transitions to settle.
+        let mut settle = 40;
+        for _ in 0..400 {
             let mut canvas = Canvas::new(self.size, self.scale, self.gui.theme.background);
             let gfx = app::Gfx {
                 text: &mut self.renderer.text,
                 images: &mut self.renderer.images,
             };
             self.gui.frame(&mut canvas, gfx, &input, player);
-            let pixels = self.renderer.capture(&canvas, self.size)?;
             if !self.renderer.images.is_loading() {
-                return Ok(pixels);
+                settle -= 1;
+                if settle == 0 {
+                    return self.renderer.capture(&canvas, self.size);
+                }
             }
+            self.renderer.text.end_frame();
             input.end_frame();
             std::thread::sleep(std::time::Duration::from_millis(10));
         }

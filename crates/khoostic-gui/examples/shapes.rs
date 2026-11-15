@@ -11,7 +11,7 @@ fn main() -> anyhow::Result<()> {
     let gpu = pollster::block_on(Gpu::headless())?;
     println!("adapter: {:?}", gpu.adapter.get_info());
     let mut r = Renderer::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, None);
-    let size = (640, 360);
+    let size = (640, 520);
     let mut c = Canvas::new(size, 1.0, Color::hex("#0e0e12").unwrap());
     let accent = Color::hex("#89dceb").unwrap();
     c.rect(
@@ -73,6 +73,45 @@ fn main() -> anyhow::Result<()> {
         Weight::Medium,
         Color::WHITE,
     );
+    // The icon set, at two sizes.
+    c.set_layer(0);
+    use khoostic_gui::icons::{Icon, draw};
+    let icons = [
+        Icon::Play,
+        Icon::Pause,
+        Icon::Prev,
+        Icon::Next,
+        Icon::Shuffle,
+        Icon::Repeat,
+        Icon::RepeatOne,
+        Icon::Volume(1.0),
+        Icon::Volume(0.3),
+        Icon::Volume(0.0),
+        Icon::Search,
+        Icon::Album,
+        Icon::Artist,
+        Icon::Song,
+        Icon::Playlist,
+        Icon::Queue,
+        Icon::Folder,
+        Icon::Visualizer,
+        Icon::Settings,
+        Icon::Heart,
+        Icon::Plus,
+        Icon::Close,
+        Icon::Back,
+        Icon::Up,
+        Icon::Spotify,
+    ];
+    for (i, icon) in icons.iter().enumerate() {
+        let (x, y) = (
+            20.0 + (i % 13) as f32 * 47.0,
+            350.0 + (i / 13) as f32 * 40.0,
+        );
+        draw(&mut c, *icon, Rect::new(x, y, 24.0, 24.0), Color::WHITE);
+        draw(&mut c, *icon, Rect::new(x, y + 90.0, 16.0, 16.0), accent);
+    }
+    c.arc(600.0, 470.0, 14.0, 0.0, 4.0, 3.0, accent);
     let px = r.capture(&c, size)?;
     let file = std::io::BufWriter::new(std::fs::File::create(&out)?);
     let mut enc = png::Encoder::new(file, size.0, size.1);

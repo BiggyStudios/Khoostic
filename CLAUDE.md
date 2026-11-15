@@ -15,7 +15,7 @@ presence and listen-along jams are planned.
 | `khoostic-spotify` | Browser sign-in (OAuth PKCE, cancellable local listener), library & search over Spotify's client API (spclient), librespot streaming as an `AudioSource`, `SpotifyResolver` |
 | `khoostic-config` | `config.toml` model; every field defaults, unknown keys are errors |
 | `khoostic-tui` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
-| `khoostic-gui` | winit + wgpu (Vulkan only): SDF quad painter, image pipeline, glyphon text, immediate-mode UI (`app.rs` chrome, `views.rs` pages) |
+| `khoostic-gui` | winit + wgpu (Vulkan only): SDF painter (boxes, triangles, lines, arcs), image pipeline, glyphon text, immediate-mode UI (`app.rs` chrome, `views.rs`/`spotify_views.rs`/`settings.rs` pages, `ui.rs` widgets, `icons.rs`, `anim.rs`) |
 | `src/main.rs` | CLI: `khoostic [tui]`, `gui`, `play`, `devices`, `config`, `spotify login/logout/status` |
 
 Data flow: `AudioSource → Conditioner → SPSC ring → cpal callback → speakers`, with the callback
@@ -62,6 +62,11 @@ cargo run -p khoostic-library --example scan     -- <music dir> <scratch dir>
 - Keep `khoostic-core` free of I/O and heavy deps.
 - GUI is immediate mode: views rebuild from state each frame; anything slow (DB queries, image
   decoding) is cached or moved off the render thread. Redraw only while something animates.
+- GUI motion: ease values through `ui.anim` (by id, frame-rate independent) instead of hand-rolled
+  timers; anything still moving keeps frames coming. The event loop paces frames to `gui.fps`
+  (`background_fps` unfocused) and draws nothing while minimized. Fills that should look subtle
+  use `Theme::wash` (blending is in linear light, so raw low alphas look far too bright).
+  Within a layer, images draw above shapes: put shapes that must cover art on layer 1.
 - Several dependencies are newer than most training data: symphonia 0.6, cpal 0.18, rubato 5,
   wgpu 30, glyphon 0.12 / cosmic-text 0.19, ratatui 0.30, rusqlite 0.43, lofty 0.25, winit 0.30.
   Read their source/examples in `~/.cargo/registry/src/` instead of guessing APIs.
