@@ -9,6 +9,7 @@ use khoostic_audio::EngineConfig;
 use khoostic_config::Config;
 use khoostic_library::Library;
 use khoostic_player::{Player, Resolvers};
+use khoostic_spotify::{Bitrate, Spotify, SpotifyConfig, Status};
 
 #[derive(Parser)]
 #[command(name = "khoostic", version, about = "An overengineered music player")]
@@ -55,6 +56,21 @@ enum Mode {
         #[arg(long)]
         init: bool,
     },
+    /// Spotify account: `login` opens your browser to sign in.
+    Spotify {
+        #[command(subcommand)]
+        action: SpotifyAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SpotifyAction {
+    /// Sign in through your browser.
+    Login,
+    /// Forget the stored Spotify session.
+    Logout,
+    /// Show whether Khoostic is connected.
+    Status,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -76,8 +92,9 @@ fn main() -> anyhow::Result<()> {
         Mode::Play { paths, shuffle } => tui(engine, &config, &paths, true, shuffle),
         Mode::Gui { paths, play } => {
             let library = open_library(&config)?;
+            let spotify = open_spotify(&config, true);
             let tracks = library.tracks_for_paths(&paths);
-            let player = Player::start(engine, Resolvers::with_defaults())?;
+            let player = Player::start(engine, resolvers(&spotify))?;
             khoostic_gui::run(player, library, &config, tracks, play)
         }
         Mode::Devices => {
@@ -86,6 +103,7 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Mode::Spotify { action } => spotify_cli(&config, action),
         Mode::Config { init } => {
             let path = match cli.config {
                 Some(p) => p,
@@ -114,7 +132,8 @@ fn tui(
     if autoplay && tracks.is_empty() {
         anyhow::bail!("no playable audio files found");
     }
-    let player = Player::start(engine, Resolvers::with_defaults())?;
+    let spotify = open_spotify(config, true);
+    let player = Player::start(engine, resolvers(&spotify))?;
     if shuffle {
         player.send(khoostic_player::PlayerCommand::SetShuffle(true));
     }
@@ -124,6 +143,70 @@ fn tui(
         config,
         khoostic_tui::Launch { tracks, autoplay },
     )
+}
+
+/// Spotify client, reconnecting a previous session in the background. `None` if it can't
+/// start (no data dir); everything else keeps working.
+fn open_spotify(config: &Config, restore: bool) -> Option<std::sync::Arc<Spotify>> {
+    let c = &config.spotify;
+    let cfg = SpotifyConfig::default_dirs(Some(c.client_id.clone()), Bitrate::from_kbps(c.bitrate));
+    match cfg.and_then(Spotify::new) {
+        Ok(s) => {
+            if restore {
+                s.restore();
+            }
+            Some(s)
+        }
+        Err(e) => {
+            tracing::warn!("Spotify unavailable: {e:#}");
+            None
+        }
+    }
+}
+
+fn resolvers(spotify: &Option<std::sync::Arc<Spotify>>) -> Resolvers {
+    let r = Resolvers::with_defaults();
+    match spotify {
+        Some(s) => r.with(s.resolver()),
+        None => r,
+    }
+}
+
+fn spotify_cli(config: &Config, action: SpotifyAction) -> anyhow::Result<()> {
+    let spotify = open_spotify(config, false).context("Spotify support couldn't start")?;
+    match action {
+        SpotifyAction::Logout => {
+            spotify.sign_out();
+            println!("Signed out of Spotify.");
+            return Ok(());
+        }
+        SpotifyAction::Login => {
+            println!("Opening your browser to sign in to Spotify…");
+            spotify.sign_in();
+        }
+        SpotifyAction::Status => spotify.restore(),
+    }
+    loop {
+        match spotify.status() {
+            Status::SigningIn | Status::Connecting => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            Status::Connected(a) => {
+                let plan = if a.premium {
+                    "Premium"
+                } else {
+                    "not Premium: streaming is unavailable"
+                };
+                println!("Connected to Spotify as {} ({plan}).", a.name);
+                return Ok(());
+            }
+            Status::Disconnected => {
+                println!("Not connected. Run `khoostic spotify login`.");
+                return Ok(());
+            }
+            Status::Failed(e) => anyhow::bail!(e),
+        }
+    }
 }
 
 /// Opens the library index and, if configured, refreshes it in the background.

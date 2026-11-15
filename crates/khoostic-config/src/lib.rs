@@ -18,6 +18,7 @@ pub struct Config {
     pub library: LibraryConfig,
     pub tui: TuiConfig,
     pub gui: GuiConfig,
+    pub spotify: SpotifyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,6 +127,25 @@ impl Default for Theme {
                 "#cba6f7".into(),
                 "#f5c2e7".into(),
             ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpotifyConfig {
+    /// Your own Spotify developer app's client id. Empty = the default public client, which
+    /// needs no setup.
+    pub client_id: String,
+    /// Streaming quality in kbps: 96, 160 or 320 (320 needs Premium).
+    pub bitrate: u32,
+}
+
+impl Default for SpotifyConfig {
+    fn default() -> Self {
+        Self {
+            client_id: String::new(),
+            bitrate: 320,
         }
     }
 }

@@ -15,6 +15,7 @@ khoostic-config = { path = "crates/khoostic-config" }
 khoostic-tui = { path = "crates/khoostic-tui" }
 khoostic-gui = { path = "crates/khoostic-gui" }
 khoostic-library = { path = "crates/khoostic-library" }
+khoostic-spotify = { path = "crates/khoostic-spotify" }
 
 anyhow = "1.0.104"
 thiserror = "2.0.21"
@@ -45,6 +46,18 @@ glyphon = "0.12.0"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 pollster = "1.0.1"
 png = "0.18"
+librespot-core = "0.8.0"
+librespot-oauth = "0.8.0"
+librespot-audio = "0.8.0"
+librespot-metadata = "0.8.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls"] }
+serde_json = "1.0.154"
+open = "5.4.5"
+sha2 = "0.10.9"
+base64 = "0.22.1"
+getrandom = "0.3.4"
+url = "2.5.8"
 lofty = "0.25.5"
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }
@@ -59,7 +72,9 @@ license.workspace = true
 khoostic-audio.workspace = true
 khoostic-player.workspace = true
 khoostic-library.workspace = true
+khoostic-spotify.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 khoostic-config.workspace = true

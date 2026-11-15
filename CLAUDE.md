@@ -71,7 +71,6 @@ cargo run -p khoostic-library --example scan     -- <music dir> <scratch dir>
 
 - Commit and push straight to `master` as work lands (no branches/PRs), using the repo's
   configured git identity.
-- **No AI attribution** in commits: no `Co-Authored-By` trailers or similar lines.
 - `README.md` stays exactly `# Khoostic`. Don't add roadmaps, plans or design docs to the repo.
 
 ## Environment
