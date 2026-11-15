@@ -1,0 +1,22 @@
+[package]
+name = "khoostic-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+khoostic-core.workspace = true
+khoostic-audio.workspace = true
+khoostic-player.workspace = true
+khoostic-config.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+glyphon.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+
+[dev-dependencies]
+png.workspace = true
+khoostic-audio.workspace = true

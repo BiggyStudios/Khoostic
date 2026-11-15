@@ -17,6 +17,7 @@ pub struct Config {
     pub audio: AudioConfig,
     pub library: LibraryConfig,
     pub tui: TuiConfig,
+    pub gui: GuiConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -114,6 +115,74 @@ impl Default for Theme {
             visual_bg: "#45475a".into(),
             playing: "#a6e3a1".into(),
             error: "#f38ba8".into(),
+            spectrum: vec![
+                "#89dceb".into(),
+                "#89b4fa".into(),
+                "#cba6f7".into(),
+                "#f5c2e7".into(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct GuiConfig {
+    /// Font family; empty = the system's default sans-serif.
+    pub font: String,
+    /// Base text size in logical pixels.
+    pub font_size: f32,
+    /// Extra UI scale on top of the OS DPI scale.
+    pub scale: f32,
+    /// Wait for vblank. Off = lowest latency (mailbox/immediate) where supported.
+    pub vsync: bool,
+    /// Corner radius of panels and rows, in logical pixels.
+    pub corner_radius: f32,
+    pub width: u32,
+    pub height: u32,
+    pub theme: GuiTheme,
+}
+
+impl Default for GuiConfig {
+    fn default() -> Self {
+        Self {
+            font: String::new(),
+            font_size: 14.0,
+            scale: 1.0,
+            vsync: true,
+            corner_radius: 8.0,
+            width: 1200,
+            height: 760,
+            theme: GuiTheme::default(),
+        }
+    }
+}
+
+/// GUI colors, `"#rrggbb"` or `"#rrggbbaa"`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct GuiTheme {
+    pub background: String,
+    pub surface: String,
+    pub surface_hover: String,
+    pub fg: String,
+    pub dim: String,
+    pub accent: String,
+    pub playing: String,
+    /// Visualizer gradient, low to high.
+    pub spectrum: Vec<String>,
+}
+
+impl Default for GuiTheme {
+    fn default() -> Self {
+        Self {
+            background: "#0e0e12".into(),
+            surface: "#17171d".into(),
+            surface_hover: "#202029".into(),
+            fg: "#e6e6ef".into(),
+            dim: "#7c7c8c".into(),
+            accent: "#89dceb".into(),
+            playing: "#a6e3a1".into(),
             spectrum: vec![
                 "#89dceb".into(),
                 "#89b4fa".into(),

@@ -13,6 +13,7 @@ khoostic-audio = { path = "crates/khoostic-audio" }
 khoostic-player = { path = "crates/khoostic-player" }
 khoostic-config = { path = "crates/khoostic-config" }
 khoostic-tui = { path = "crates/khoostic-tui" }
+khoostic-gui = { path = "crates/khoostic-gui" }
 
 anyhow = "1.0.104"
 thiserror = "2.0.21"
@@ -37,6 +38,12 @@ serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.2.1"
 directories = "6.0.0"
 unicode-width = "0.2.3"
+winit = "0.30.13"
+wgpu = { version = "30.0.2", default-features = false, features = ["vulkan", "wgsl", "std"] }
+glyphon = "0.12.0"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+pollster = "1.0.1"
+png = "0.18"
 
 [package]
 name = "khoostic"
@@ -52,6 +59,7 @@ tracing-subscriber.workspace = true
 clap.workspace = true
 khoostic-config.workspace = true
 khoostic-tui.workspace = true
+khoostic-gui.workspace = true
 
 [profile.release]
 lto = "thin"

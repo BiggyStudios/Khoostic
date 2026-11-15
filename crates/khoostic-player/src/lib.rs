@@ -4,6 +4,7 @@
 //! [`PlayerCommand`]s, cheap [`PlayerSnapshot`]s and the shared queue. That keeps every
 //! frontend interchangeable and makes remote control (MPD, listen-along) a thin layer.
 
+pub mod browse;
 pub mod resolve;
 pub mod scan;
 

@@ -32,8 +32,13 @@ struct Cli {
 enum Mode {
     /// Terminal interface (the default). Optional files/folders are queued.
     Tui { paths: Vec<PathBuf> },
-    /// Vulkan-rendered interface with 3D visualizers (step 3).
-    Gui,
+    /// Vulkan-rendered interface. Optional files/folders are queued.
+    Gui {
+        paths: Vec<PathBuf>,
+        /// Start playing the given paths right away.
+        #[arg(short, long)]
+        play: bool,
+    },
     /// Open the TUI and start playing these files/folders right away.
     Play {
         #[arg(required = true)]
@@ -68,7 +73,11 @@ fn main() -> anyhow::Result<()> {
     match cli.command.unwrap_or(Mode::Tui { paths: Vec::new() }) {
         Mode::Tui { paths } => tui(engine, &config, &paths, false, false),
         Mode::Play { paths, shuffle } => tui(engine, &config, &paths, true, shuffle),
-        Mode::Gui => anyhow::bail!("the Vulkan GUI arrives in step 3"),
+        Mode::Gui { paths, play } => {
+            let tracks = scan::collect_tracks(&paths);
+            let player = Player::start(engine, Resolvers::with_defaults())?;
+            khoostic_gui::run(player, &config, tracks, play)
+        }
         Mode::Devices => {
             for name in khoostic_audio::output::device_names()? {
                 println!("{name}");

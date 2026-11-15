@@ -10,12 +10,12 @@ use khoostic_player::{Player, PlayerCommand as Cmd, PlayerEvent, scan};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::action::Action;
-use crate::browser::{Browser, EntryKind};
 use crate::command::{self, Adjust, SeekArg, View};
 use crate::input::{InputResult, LineInput};
 use crate::keymap::{Chord, KeyMode, Keymap, Outcome};
 use crate::theme::Theme;
 use crate::visualizer::Visualizer;
+use khoostic_player::browse::{Browser, EntryKind};
 
 /// How long to wait for the rest of an ambiguous key sequence (vim's `timeoutlen`).
 const KEY_TIMEOUT: Duration = Duration::from_millis(1000);

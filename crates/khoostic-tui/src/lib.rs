@@ -2,7 +2,6 @@
 
 pub mod action;
 pub mod app;
-pub mod browser;
 pub mod command;
 pub mod input;
 pub mod keymap;

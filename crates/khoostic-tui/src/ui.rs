@@ -15,10 +15,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::action::Action;
 use crate::app::{App, ListView, Mode};
-use crate::browser::EntryKind;
 use crate::command::{COMMANDS, View};
 use crate::keymap::KeyMode;
 use crate::visualizer;
+use khoostic_player::browse::EntryKind;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
