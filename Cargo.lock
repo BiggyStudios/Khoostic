@@ -2327,6 +2327,7 @@ dependencies = [
  "khoostic-core",
  "khoostic-library",
  "khoostic-player",
+ "khoostic-spotify",
  "ratatui",
  "tracing",
  "unicode-width",

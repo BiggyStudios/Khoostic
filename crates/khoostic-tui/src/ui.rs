@@ -40,6 +40,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::Queue => draw_queue(f.buffer_mut(), main, app, &snap),
         View::Albums => draw_albums(f.buffer_mut(), main, app, &snap),
         View::Songs => draw_songs(f.buffer_mut(), main, app, &snap),
+        View::Playlists => draw_playlists(f.buffer_mut(), main, app, &snap),
         View::Browse => draw_browser(f.buffer_mut(), main, app),
         View::Visualizer => {
             let a = app.player.analysis();
@@ -92,7 +93,16 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, snap: &PlayerSnapshot) {
         RepeatMode::All => ("repeat all", true),
         RepeatMode::One => ("repeat one", true),
     };
+    let sp = app.pl.status_line();
     let right = Line::from(vec![
+        Span::styled(
+            if sp.is_empty() {
+                String::new()
+            } else {
+                format!("{sp}   ")
+            },
+            t.dim(),
+        ),
         Span::styled("shuffle", shuffle),
         Span::raw("  "),
         Span::styled(repeat_txt, if repeat_on { t.accent() } else { t.dim() }),
@@ -902,6 +912,112 @@ fn draw_songs(buf: &mut Buffer, area: Rect, app: &mut App, snap: &PlayerSnapshot
     );
 }
 
+fn draw_playlists(buf: &mut Buffer, area: Rect, app: &mut App, snap: &PlayerSnapshot) {
+    let playing = snap.current.as_ref().map(|e| e.track.locator.clone());
+    if let Some((title, _)) = app.pl.open.clone() {
+        let t = &app.theme;
+        let bold = Style::new().fg(t.fg).add_modifier(Modifier::BOLD);
+        buf.set_stringn(
+            area.x,
+            area.y,
+            truncate(&title, area.width as usize),
+            area.width as usize,
+            bold,
+        );
+        let hint = "<CR> play from here · a add · :addto <playlist> · h back";
+        buf.set_stringn(area.x, area.y + 1, hint, area.width as usize, t.dim());
+        let list = Rect {
+            y: area.y + 3,
+            height: area.height.saturating_sub(3),
+            ..area
+        };
+        let len = app.pl.open.as_ref().map_or(0, |(_, t)| t.len());
+        app.pl.tracks_view.height = list.height.saturating_sub(1) as usize;
+        app.pl.tracks_view.scroll_into_view(len);
+        let tracks = &app.pl.open.as_ref().expect("open playlist").1;
+        let view = &app.pl.tracks_view;
+        draw_tracks(
+            buf,
+            list,
+            &app.theme,
+            &app.mode,
+            tracks,
+            view,
+            playing.as_ref(),
+            false,
+            true,
+        );
+        return;
+    }
+
+    let entries = app.pl.entries();
+    if entries.is_empty() {
+        let msg = if app.pl.spotify.is_some() && !app.pl.connected() {
+            "no playlists yet: :newpl <name> creates one, :spotify login connects Spotify"
+        } else {
+            "no playlists yet: :newpl <name> creates one"
+        };
+        buf.set_stringn(
+            area.x,
+            area.y + 1,
+            msg,
+            area.width as usize,
+            app.theme.dim(),
+        );
+        return;
+    }
+    let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    app.pl.root_view.height = body.height as usize;
+    app.pl.root_view.scroll_into_view(entries.len());
+    let t = &app.theme;
+    let name_w = (area.width as usize * 60 / 100).max(10);
+    buf.set_string(head.x + 2, head.y, "playlist", t.dim());
+    buf.set_string(head.x + 2 + name_w as u16, head.y, "where", t.dim());
+    let view = &app.pl.root_view;
+    let rows = entries
+        .iter()
+        .enumerate()
+        .skip(view.offset)
+        .take(body.height as usize);
+    for (row, (i, e)) in rows.enumerate() {
+        let y = body.y + row as u16;
+        let style = list_row_style(t, &app.mode, i, view, false);
+        buf.set_style(
+            Rect {
+                x: body.x,
+                y,
+                width: body.width,
+                height: 1,
+            },
+            style,
+        );
+        let sub = if i == view.selected {
+            style
+        } else {
+            style.patch(Style::new().fg(t.dim))
+        };
+        let icon = match e {
+            crate::playlists::Entry::Local { .. } => "▪ ",
+            _ => "♫ ",
+        };
+        buf.set_string(body.x, y, icon, sub);
+        buf.set_stringn(
+            body.x + 2,
+            y,
+            truncate(&e.title(), name_w - 2),
+            name_w - 2,
+            style,
+        );
+        let rest = body.width.saturating_sub(2 + name_w as u16) as usize;
+        buf.set_stringn(
+            body.x + 2 + name_w as u16,
+            y,
+            truncate(&e.detail(), rest),
+            rest,
+            sub,
+        );
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

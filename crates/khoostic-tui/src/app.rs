@@ -16,6 +16,7 @@ use crate::command::{self, Adjust, SeekArg, View};
 use crate::input::{InputResult, LineInput};
 use crate::keymap::{Chord, KeyMode, Keymap, Outcome};
 use crate::library::LibState;
+use crate::playlists::PlState;
 use crate::theme::Theme;
 use crate::visualizer::Visualizer;
 use khoostic_player::browse::{Browser, EntryKind};
@@ -83,6 +84,7 @@ pub struct App {
     pub browse_view: ListView,
     pub browser: Browser,
     pub lib: LibState,
+    pub pl: PlState,
     pub vis: Visualizer,
     pub message: Option<Message>,
     /// Help overlay scroll offset when open.
@@ -100,7 +102,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(player: Player, library: Arc<Library>, config: &Config) -> Self {
+    pub fn new(
+        player: Player,
+        library: Arc<Library>,
+        spotify: Option<Arc<khoostic_spotify::Spotify>>,
+        config: &Config,
+    ) -> Self {
         let (theme, mut problems) = Theme::from_config(&config.tui.theme);
         let (keymap, key_problems) = Keymap::default().with_overrides(&config.tui.keys);
         problems.extend(key_problems);
@@ -121,6 +128,7 @@ impl App {
             browse_view: ListView::default(),
             browser: Browser::new(start),
             lib: LibState::default(),
+            pl: PlState::new(spotify),
             vis: Visualizer::default(),
             message: None,
             help: None,
@@ -160,6 +168,13 @@ impl App {
     /// Periodic work: player events, key timeouts, message expiry, visualizer physics.
     pub fn tick(&mut self) {
         self.lib.refresh(&self.library);
+        for (msg, is_err) in self.pl.tick(&self.library) {
+            if is_err {
+                self.error(msg);
+            } else {
+                self.info(msg);
+            }
+        }
         while let Ok(ev) = self.player.events().try_recv() {
             if let PlayerEvent::Error(e) = ev {
                 self.error(e);
@@ -280,6 +295,10 @@ impl App {
                 None => self.lib.albums.len(),
             },
             View::Songs => self.lib.songs.len(),
+            View::Playlists => match &self.pl.open {
+                Some((_, t)) => t.len(),
+                None => self.pl.entries().len(),
+            },
             View::Browse => self.browser.entries().len(),
             View::Visualizer => 0,
         }
@@ -291,6 +310,8 @@ impl App {
             View::Albums if self.lib.open.is_some() => &mut self.lib.album_view,
             View::Albums => &mut self.lib.albums_view,
             View::Songs => &mut self.lib.songs_view,
+            View::Playlists if self.pl.open.is_some() => &mut self.pl.tracks_view,
+            View::Playlists => &mut self.pl.root_view,
             _ => &mut self.queue_view,
         }
     }
@@ -301,6 +322,8 @@ impl App {
             View::Albums if self.lib.open.is_some() => &self.lib.album_view,
             View::Albums => &self.lib.albums_view,
             View::Songs => &self.lib.songs_view,
+            View::Playlists if self.pl.open.is_some() => &self.pl.tracks_view,
+            View::Playlists => &self.pl.root_view,
             _ => &self.queue_view,
         }
     }
@@ -355,6 +378,8 @@ impl App {
             Parent => {
                 if self.view == View::Albums {
                     self.close_album();
+                } else if self.view == View::Playlists {
+                    self.pl.open = None;
                 } else if self.view == View::Browse {
                     match self.browser.parent() {
                         Some(i) => self.browse_view.set(i, self.browser.entries().len()),
@@ -370,7 +395,7 @@ impl App {
             Append | InsertNext => {
                 let tracks = match self.view {
                     View::Browse => self.browser_tracks(n),
-                    View::Albums | View::Songs => self.lib_tracks(n),
+                    View::Albums | View::Songs | View::Playlists => self.lib_tracks(n),
                     _ => {
                         self.info("append/insert work in albums, songs and the browser");
                         return;
@@ -434,7 +459,7 @@ impl App {
                         q.entries()[r].iter().map(|e| (*e.track).clone()).collect()
                     }
                     View::Browse => self.browser_tracks(n),
-                    View::Albums | View::Songs => self.lib_tracks(n),
+                    View::Albums | View::Songs | View::Playlists => self.lib_tracks(n),
                     View::Visualizer => Vec::new(),
                 };
                 if let Mode::Visual { anchor } = self.mode {
@@ -558,6 +583,12 @@ impl App {
                 self.set_view(View::Albums);
             }
             ViewSongs => self.set_view(View::Songs),
+            ViewPlaylists => {
+                if self.view == View::Playlists {
+                    self.pl.open = None;
+                }
+                self.set_view(View::Playlists);
+            }
             ViewBrowse => self.set_view(View::Browse),
             ViewVisualizer => self.set_view(View::Visualizer),
             CycleVisualizer => {
@@ -627,6 +658,20 @@ impl App {
                     self.player.send(Cmd::PlayTracks { tracks, start });
                 }
             }
+            View::Playlists => {
+                let sel = self.pl.tracks_view.selected;
+                match &self.pl.open {
+                    Some((_, tracks)) if !tracks.is_empty() => {
+                        let tracks = tracks.clone();
+                        self.player.send(Cmd::PlayTracks { tracks, start: sel });
+                    }
+                    Some(_) => {}
+                    None => {
+                        let i = self.pl.root_view.selected;
+                        self.pl.open_entry(i);
+                    }
+                }
+            }
             View::Visualizer => self.player.send(Cmd::TogglePause),
         }
     }
@@ -650,6 +695,12 @@ impl App {
                 .flat_map(|al| self.library.album_tracks(&al.name, al.artist.as_deref()))
                 .collect(),
             (View::Songs, _) => self.lib.songs[range].to_vec(),
+            (View::Playlists, _) => self
+                .pl
+                .open
+                .as_ref()
+                .map(|(_, t)| t[range].to_vec())
+                .unwrap_or_default(),
             _ => Vec::new(),
         }
     }
@@ -691,6 +742,10 @@ impl App {
                     .map(|al| format!("{} {}", al.name, al.artist.as_deref().unwrap_or(""))),
             },
             View::Songs => self.lib.songs.get(index).map(track_text),
+            View::Playlists => match &self.pl.open {
+                Some((_, t)) => t.get(index).map(track_text),
+                None => self.pl.entries().get(index).map(|e| e.title()),
+            },
             View::Visualizer => None,
         }
     }
@@ -794,6 +849,51 @@ impl App {
             },
             C::View(v) => self.set_view(v),
             C::Help => self.help = Some(0),
+            C::Spotify(cmd) => {
+                let Some(sp) = self.pl.spotify.clone() else {
+                    return self.error("Spotify isn't available");
+                };
+                match cmd {
+                    command::SpotifyCmd::Login => {
+                        sp.sign_in();
+                        self.info("finish signing in to Spotify in your browser");
+                    }
+                    command::SpotifyCmd::Logout => {
+                        sp.sign_out();
+                        self.info("signed out of Spotify");
+                    }
+                    command::SpotifyCmd::Status => {
+                        let s = self.pl.status_line();
+                        self.info(if s.is_empty() {
+                            "spotify off".to_string()
+                        } else {
+                            s
+                        });
+                    }
+                }
+            }
+            C::SpotifySearch(q) => match self.pl.search(&q) {
+                Ok(()) => {
+                    self.info(format!("searching Spotify for “{q}”…"));
+                    self.set_view(View::Playlists);
+                }
+                Err(e) => self.error(e),
+            },
+            C::AddTo(name) => {
+                let tracks = self.selected_tracks();
+                if tracks.is_empty() {
+                    return self.error("select some tracks first");
+                }
+                self.mode = Mode::Normal;
+                match self.pl.add_to(&self.library, &name, tracks) {
+                    Ok(m) => self.info(m),
+                    Err(e) => self.error(e),
+                }
+            }
+            C::NewPlaylist(name) => match self.library.create_playlist(&name, &[]) {
+                Ok(_) => self.info(format!("created “{name}”: add tracks with :addto {name}")),
+                Err(e) => self.error(e.to_string()),
+            },
             C::Config { init } => match Config::default_path() {
                 None => self.error("no config directory on this system"),
                 Some(p) if init && !p.exists() => match Config::write_default(&p) {
@@ -816,7 +916,23 @@ impl App {
     pub fn animating(&self) -> bool {
         let s = self.player.snapshot();
         let a = self.player.analysis();
-        s.state == khoostic_audio::PlaybackState::Playing || a.bands.iter().any(|&b| b > 0.0)
+        s.state == khoostic_audio::PlaybackState::Playing
+            || a.bands.iter().any(|&b| b > 0.0)
+            || self.pl.busy()
+    }
+
+    /// Tracks under the cursor / visual selection in any track view (for :addto).
+    fn selected_tracks(&self) -> Vec<Track> {
+        match self.view {
+            View::Queue => {
+                let q = self.player.queue().read();
+                let r = self.selection(1);
+                q.entries()[r].iter().map(|e| (*e.track).clone()).collect()
+            }
+            View::Albums | View::Songs | View::Playlists => self.lib_tracks(1),
+            View::Browse => self.browser_tracks(1),
+            View::Visualizer => Vec::new(),
+        }
     }
 }
 

@@ -140,6 +140,7 @@ fn tui(
     khoostic_tui::run(
         player,
         library,
+        spotify,
         config,
         khoostic_tui::Launch { tracks, autoplay },
     )

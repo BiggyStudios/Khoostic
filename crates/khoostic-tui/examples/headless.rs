@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     let tmp = std::env::temp_dir().join("khoostic-example-lib");
     let library = khoostic_library::Library::open(&tmp.join("lib.db"), &tmp.join("covers"))?;
     library.scan_blocking(&config.library.music_dirs)?;
-    let mut app = App::new(player, library, &config);
+    let mut app = App::new(player, library, None, &config);
     let mut term = Terminal::new(TestBackend::new(100, 24))?;
 
     let mut screen = |app: &mut App, label: &str| -> anyhow::Result<()> {
@@ -65,6 +65,15 @@ fn main() -> anyhow::Result<()> {
     screen(&mut app, "album playing")?;
     keys(&mut app, "hgs");
     screen(&mut app, "songs")?;
+    keys(&mut app, ":");
+    typed(&mut app, "newpl Road trip");
+    keys(&mut app, "j");
+    keys(&mut app, ":");
+    typed(&mut app, "addto road");
+    keys(&mut app, "gp");
+    screen(&mut app, "playlists")?;
+    keys(&mut app, "<CR>");
+    screen(&mut app, "playlist open")?;
     keys(&mut app, ":");
     typed(&mut app, "clear");
     keys(&mut app, "gb");

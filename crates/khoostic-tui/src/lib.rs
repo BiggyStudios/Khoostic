@@ -6,6 +6,7 @@ pub mod command;
 pub mod input;
 pub mod keymap;
 pub mod library;
+pub mod playlists;
 pub mod theme;
 pub mod ui;
 pub mod visualizer;
@@ -35,10 +36,11 @@ pub struct Launch {
 pub fn run(
     player: Player,
     library: Arc<Library>,
+    spotify: Option<Arc<khoostic_spotify::Spotify>>,
     config: &Config,
     launch: Launch,
 ) -> anyhow::Result<()> {
-    let mut app = App::new(player, library, config);
+    let mut app = App::new(player, library, spotify, config);
     if !launch.tracks.is_empty() {
         app.player.send(if launch.autoplay {
             PlayerCommand::EnqueueAndPlay(launch.tracks)

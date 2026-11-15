@@ -1,8 +1,8 @@
 # Khoostic — notes for coding agents
 
 Khoostic is a music player written in Rust: one binary (`khoostic`) with a vim-style TUI and a
-Vulkan-rendered GUI over a shared player core. Local files today; Spotify (librespot), Last.fm,
-Navidrome/Subsonic, MPD, Discord presence and listen-along jams are planned.
+Vulkan-rendered GUI over a shared player core. Local files and Spotify (librespot) today; Last.fm, Navidrome/Subsonic, MPD, Discord
+presence and listen-along jams are planned.
 
 ## Workspace
 
@@ -12,10 +12,11 @@ Navidrome/Subsonic, MPD, Discord presence and listen-along jams are planned.
 | `khoostic-audio` | `AudioSource` trait, symphonia decoding, `Conditioner` (stereo + rubato), engine thread, cpal output, FFT analysis feed |
 | `khoostic-player` | `Player` controller (queue ↔ engine, gapless preload), `SourceResolver`s, file browser model |
 | `khoostic-library` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists |
+| `khoostic-spotify` | Browser sign-in (OAuth PKCE, cancellable local listener), Web API client, librespot streaming as an `AudioSource`, `SpotifyResolver` |
 | `khoostic-config` | `config.toml` model; every field defaults, unknown keys are errors |
 | `khoostic-tui` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
 | `khoostic-gui` | winit + wgpu (Vulkan only): SDF quad painter, image pipeline, glyphon text, immediate-mode UI (`app.rs` chrome, `views.rs` pages) |
-| `src/main.rs` | CLI: `khoostic [tui]`, `gui`, `play`, `devices`, `config` |
+| `src/main.rs` | CLI: `khoostic [tui]`, `gui`, `play`, `devices`, `config`, `spotify login|logout|status` |
 
 Data flow: `AudioSource → Conditioner → SPSC ring → cpal callback → speakers`, with the callback
 tapping the same samples into the analysis thread (`ArcSwap<AnalysisFrame>`). The engine tracks

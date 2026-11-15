@@ -75,6 +75,7 @@ actions! {
     ViewQueue = "view_queue": "queue view",
     ViewAlbums = "view_albums": "albums view",
     ViewSongs = "view_songs": "songs view",
+    ViewPlaylists = "view_playlists": "playlists view (Khoostic + Spotify)",
     ViewBrowse = "view_browse": "browser view",
     ViewVisualizer = "view_visualizer": "visualizer view",
     CycleVisualizer = "cycle_visualizer": "next visualizer style",

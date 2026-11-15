@@ -13,15 +13,17 @@ pub enum View {
     Queue,
     Albums,
     Songs,
+    Playlists,
     Browse,
     Visualizer,
 }
 
 impl View {
-    pub const ALL: [View; 5] = [
+    pub const ALL: [View; 6] = [
         View::Queue,
         View::Albums,
         View::Songs,
+        View::Playlists,
         View::Browse,
         View::Visualizer,
     ];
@@ -31,6 +33,7 @@ impl View {
             View::Queue => "Queue",
             View::Albums => "Albums",
             View::Songs => "Songs",
+            View::Playlists => "Playlists",
             View::Browse => "Browse",
             View::Visualizer => "Visualizer",
         }
@@ -75,6 +78,17 @@ pub enum Cmd {
     Config {
         init: bool,
     },
+    Spotify(SpotifyCmd),
+    SpotifySearch(String),
+    AddTo(String),
+    NewPlaylist(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpotifyCmd {
+    Login,
+    Logout,
+    Status,
 }
 
 pub const COMMANDS: &[(&str, &str)] = &[
@@ -97,6 +111,16 @@ pub const COMMANDS: &[(&str, &str)] = &[
         ":config [init]",
         "show config path / write a default config",
     ),
+    (
+        ":spotify <login|logout|status>",
+        "connect Spotify in your browser",
+    ),
+    (":sp <search>", "search Spotify (results open in Playlists)"),
+    (
+        ":addto <playlist>",
+        "add selected tracks to a playlist (not local → Spotify)",
+    ),
+    (":newpl <name>", "create a Khoostic playlist"),
     (":<action>", "run any action by name, e.g. :next_track"),
 ];
 
@@ -137,11 +161,25 @@ pub fn parse(line: &str) -> Result<Cmd, String> {
             Some("queue" | "q") => View::Queue,
             Some("albums" | "library" | "l") => View::Albums,
             Some("songs" | "s") => View::Songs,
+            Some("playlists" | "p") => View::Playlists,
             Some("browse" | "b" | "files") => View::Browse,
             Some("vis" | "visualizer" | "v") => View::Visualizer,
             _ => return Err("usage: :view <queue|albums|songs|browse|vis>".into()),
         }),
         "h" | "help" => Cmd::Help,
+        "spotify" => Cmd::Spotify(match arg {
+            Some("login") => SpotifyCmd::Login,
+            Some("logout") => SpotifyCmd::Logout,
+            None | Some("status") => SpotifyCmd::Status,
+            Some(a) => {
+                return Err(format!(
+                    "spotify: expected login, logout or status, got {a:?}"
+                ));
+            }
+        }),
+        "sp" => Cmd::SpotifySearch(arg.ok_or("usage: :sp <search>")?.to_owned()),
+        "addto" => Cmd::AddTo(arg.ok_or("usage: :addto <playlist name>")?.to_owned()),
+        "newpl" => Cmd::NewPlaylist(arg.ok_or("usage: :newpl <name>")?.to_owned()),
         "config" => Cmd::Config {
             init: arg == Some("init"),
         },
