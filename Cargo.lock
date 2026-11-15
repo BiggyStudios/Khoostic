@@ -2186,197 +2186,52 @@ name = "khoostic"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
- "khoostic-audio",
- "khoostic-config",
- "khoostic-discovery",
- "khoostic-gui",
- "khoostic-lastfm",
- "khoostic-library",
- "khoostic-player",
- "khoostic-spotify",
- "khoostic-tui",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "khoostic-audio"
-version = "0.1.0"
-dependencies = [
- "anyhow",
  "arc-swap",
+ "base64 0.22.1",
+ "bytemuck",
+ "clap",
  "cpal",
  "crossbeam-channel",
- "khoostic-core",
- "parking_lot 0.13.0",
- "realfft",
- "rtrb",
- "rubato",
- "symphonia",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
-name = "khoostic-config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
  "directories",
- "serde",
- "toml",
- "toml_edit",
-]
-
-[[package]]
-name = "khoostic-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossbeam-channel",
  "fastrand",
-]
-
-[[package]]
-name = "khoostic-discovery"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "fastrand",
- "khoostic-audio",
- "khoostic-core",
- "khoostic-lastfm",
- "khoostic-library",
- "khoostic-player",
- "khoostic-spotify",
- "tracing",
-]
-
-[[package]]
-name = "khoostic-gui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "crossbeam-channel",
- "fastrand",
- "glyphon",
- "image",
- "khoostic-audio",
- "khoostic-config",
- "khoostic-core",
- "khoostic-discovery",
- "khoostic-lastfm",
- "khoostic-library",
- "khoostic-player",
- "khoostic-spotify",
- "png",
- "pollster",
- "tracing",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "khoostic-lastfm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "directories",
- "khoostic-core",
- "khoostic-player",
- "md-5",
- "open",
- "parking_lot 0.13.0",
- "reqwest 0.13.5",
- "serde",
- "serde_json",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "khoostic-library"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossbeam-channel",
- "directories",
- "image",
- "khoostic-audio",
- "khoostic-core",
- "lofty",
- "parking_lot 0.13.0",
- "rusqlite",
- "tracing",
- "walkdir",
-]
-
-[[package]]
-name = "khoostic-player"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossbeam-channel",
- "khoostic-audio",
- "khoostic-core",
- "parking_lot 0.13.0",
- "tracing",
-]
-
-[[package]]
-name = "khoostic-spotify"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "crossbeam-channel",
- "directories",
  "getrandom 0.3.4",
+ "glyphon",
  "http",
- "khoostic-audio",
- "khoostic-core",
- "khoostic-player",
+ "image",
  "librespot-audio",
  "librespot-core",
  "librespot-metadata",
  "librespot-oauth",
  "librespot-protocol",
+ "lofty",
+ "md-5",
  "open",
  "parking_lot 0.13.0",
+ "png",
+ "pollster",
  "protobuf",
  "protobuf-json-mapping",
+ "ratatui",
+ "realfft",
  "reqwest 0.13.5",
+ "rtrb",
+ "rubato",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "symphonia",
  "thiserror 2.0.21",
  "tokio",
+ "toml",
+ "toml_edit",
  "tracing",
- "url",
-]
-
-[[package]]
-name = "khoostic-tui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "directories",
- "fastrand",
- "image",
- "khoostic-audio",
- "khoostic-config",
- "khoostic-core",
- "khoostic-discovery",
- "khoostic-lastfm",
- "khoostic-library",
- "khoostic-player",
- "khoostic-spotify",
- "ratatui",
- "tracing",
+ "tracing-subscriber",
  "unicode-width",
+ "url",
+ "walkdir",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]

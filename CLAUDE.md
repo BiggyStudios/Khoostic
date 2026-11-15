@@ -1,24 +1,30 @@
 # Khoostic — notes for coding agents
 
-Khoostic is a music player written in Rust: one binary (`khoostic`) with a vim-style TUI and a
-Vulkan-rendered GUI over a shared player core. Local files, Spotify (librespot) and Last.fm today; Navidrome/Subsonic, MPD, Discord
-presence and listen-along jams are planned.
+Khoostic is a music player written in Rust: one crate, one binary (`khoostic`). The Vulkan-rendered
+GUI is the main interface; `--tui` gives a vim-style terminal UI over the same player core. Local
+files, Spotify (librespot) and Last.fm today; Navidrome/Subsonic, MPD, Discord presence and
+listen-along jams are planned.
 
-## Workspace
+## Layout
 
-| Crate | Owns |
+One crate (`src/lib.rs` + a thin `src/main.rs`), split into modules. Modules are layered: each
+only uses the ones listed above it here (keep it that way; no cycles back up).
+
+| Module | Owns |
 |---|---|
-| `khoostic-core` | `Track`, `TrackLocator` (+ URI form), `CoverRef`, `Queue`, `Pending`, song matching, natural sort. **No I/O.** |
-| `khoostic-audio` | `AudioSource` trait, symphonia decoding, `Conditioner` (stereo + rubato), engine thread, cpal output, FFT analysis feed |
-| `khoostic-player` | `Player` controller (queue ↔ engine, gapless preload), `SourceResolver`s, file browser model |
-| `khoostic-library` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists |
-| `khoostic-spotify` | Browser sign-in (OAuth PKCE, cancellable local listener), library & search over Spotify's client API (spclient), librespot streaming as an `AudioSource`, `SpotifyResolver` |
-| `khoostic-lastfm` | Last.fm: signed API client, browser sign-in, scrobble rules (`tracker.rs`, pure), background scrobbler with a persisted offline queue, similar tracks |
-| `khoostic-discovery` | Song radio (Spotify radio + Last.fm similar, matched to local files first, library-only fallback) and the autoplay watcher |
-| `khoostic-config` | `config.toml` model; every field defaults, unknown keys are errors; `save_value` edits one key in place |
-| `khoostic-tui` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
-| `khoostic-gui` | winit + wgpu (Vulkan only): SDF painter (boxes, triangles, lines, arcs), image pipeline, glyphon text, immediate-mode UI (`app.rs` chrome, `views.rs`/`spotify_views.rs`/`settings.rs` pages, `ui.rs` widgets, `icons.rs`, `anim.rs`) |
-| `src/main.rs` | CLI: `khoostic [tui]`, `gui`, `play`, `devices`, `config`, `spotify` and `lastfm` `login/logout/status`; `start()` wires the shared services |
+| `model/` | `Track`, `TrackLocator` (+ URI form), `CoverRef`, `Queue`, song matching, natural sort. **No I/O.** |
+| `pending.rs` | `Pending<T>`: a background result the UIs poll once per frame |
+| `config.rs` | `config.toml` model; every field defaults, unknown keys are errors; `save_value` edits one key in place |
+| `audio/` | `AudioSource` trait, symphonia decoding, `Conditioner` (stereo + rubato), engine thread, cpal output, FFT analysis feed |
+| `player/` | `Player` controller (queue ↔ engine, gapless preload), `SourceResolver`s, file browser model |
+| `library/` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists |
+| `spotify/` | Browser sign-in (OAuth PKCE, cancellable local listener), library & search over Spotify's client API (spclient), librespot streaming as an `AudioSource`, `SpotifyResolver` |
+| `lastfm/` | Signed API client, browser sign-in, scrobble rules (`tracker.rs`, pure), background scrobbler with a persisted offline queue, similar tracks |
+| `discovery.rs` | Song radio (Spotify radio + Last.fm similar, matched to local files first, library-only fallback) and the autoplay watcher |
+| `services.rs` | `Services::start`: library, Spotify, Last.fm, player and discovery wired together; `Launch` (paths from the command line) |
+| `gui/` | `window.rs` event loop + frame pacing, `headless.rs` offscreen; `app.rs` state + frame layout, `sidebar.rs`, `player_bar.rs`, `menu.rs`, `spotify.rs` (Spotify data); `views/` one file per page (+ `lists.rs` track rows, `grid.rs` cover tiles); `ui/` widgets, `anim.rs`, `icons.rs`, `text_field.rs`; `render/` canvas, SDF painter (boxes, triangles, lines, arcs), images, glyphon text, wgpu (Vulkan only) |
+| `tui/` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
+| `main.rs` | CLI: `khoostic [paths] [--tui] [--play] [--shuffle]`, `devices`, `config`, `spotify`/`lastfm` `login/logout/status` |
 
 Data flow: `AudioSource → Conditioner → SPSC ring → cpal callback → speakers`, with the callback
 tapping the same samples into the analysis thread (`ArcSwap<AnalysisFrame>`). The engine tracks
@@ -29,21 +35,21 @@ New backends (Spotify, Subsonic, MPD) plug in as a `SourceResolver` that returns
 
 ```sh
 cargo build                          # dev deps are built with opt-level 3 (audio DSP needs it)
-cargo test --workspace
-cargo clippy --workspace --all-targets   # keep this warning-free
-cargo fmt --all
-cargo run --release -- gui           # or: tui, play <paths>, devices, config --init
-KHOOSTIC_LOG=debug cargo run -- gui  # logs go to %TEMP%/khoostic.log, never stderr (TUI)
+cargo test
+cargo clippy --all-targets           # keep this warning-free
+cargo fmt
+cargo run --release                  # the GUI; or: -- --tui, -- <paths> --play, -- devices, -- config --init
+KHOOSTIC_LOG=debug cargo run         # logs go to %TEMP%/khoostic.log, never stderr (TUI)
 ```
 
 Real-hardware checks (examples):
 
 ```sh
-cargo run -p khoostic-player  --example smoke    -- <short.wav> <short2.wav> <long track>
-cargo run -p khoostic-tui     --example headless -- <music dir>   # scripted keys, prints screens
-cargo run -p khoostic-gui     --example screens  -- <music dir> <out dir>   # PNG screenshots
-cargo run -p khoostic-gui     --example shapes   -- <out.png>     # renderer test card
-cargo run -p khoostic-library --example scan     -- <music dir> <scratch dir>
+cargo run --example audio_smoke  -- <short.wav> <short2.wav> <long track>
+cargo run --example tui_headless -- <music dir>   # scripted keys, prints screens
+cargo run --example gui_screens  -- <music dir> <out dir>   # PNG screenshots
+cargo run --example gui_shapes   -- <out.png>     # renderer test card
+cargo run --example library_scan -- <music dir> <scratch dir>
 ```
 
 ## Testing rules
@@ -51,7 +57,7 @@ cargo run -p khoostic-library --example scan     -- <music dir> <scratch dir>
 - **Never make sound on the user's device.** Examples and smoke tests run the engine at volume 0
   (the visualizer tap is pre-volume, so analysis still gets exercised).
 - Examples use a throwaway library at `%TEMP%/khoostic-example-lib`, never the real one.
-- UI changes: verify by rendering. `khoostic_gui::Headless` renders the real GUI offscreen with
+- UI changes: verify by rendering. `gui::Headless` renders the real GUI offscreen with
   scripted `Input` and waits for cover art; read the PNGs. The TUI renders to `TestBackend`
   (note: its cell grid can show stale cells under wide CJK glyphs that real terminals clear).
 - Unit tests must not need audio hardware, a GPU or the user's files; generate fixtures (the
@@ -61,7 +67,7 @@ cargo run -p khoostic-library --example scan     -- <music dir> <scratch dir>
 
 - Rust 2024, clippy-clean, rustfmt defaults. `anyhow` at the edges, `thiserror` in libraries.
 - The cpal callback is real-time: no locks, no allocation in the steady state, no blocking.
-- Keep `khoostic-core` free of I/O and heavy deps.
+- Keep `model` free of I/O and heavy deps.
 - GUI is immediate mode: views rebuild from state each frame; anything slow (DB queries, image
   decoding) is cached or moved off the render thread. Redraw only while something animates.
 - GUI motion: ease values through `ui.anim` (by id, frame-rate independent) instead of hand-rolled

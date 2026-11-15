@@ -1,0 +1,241 @@
+//! The right-click menu for songs: play next, queue, radio, add to playlists.
+
+use std::time::{Duration, Instant};
+
+use crate::gui::app::{Gui, count};
+use crate::gui::render::{Color, Rect, Weight};
+use crate::gui::ui::Ui;
+use crate::gui::ui::anim::{self, ease_out};
+use crate::model::{EntryId, Track, TrackLocator};
+use crate::player::{Player, PlayerCommand as Cmd};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuSource {
+    Queue(EntryId),
+    LocalPlaylist { id: i64, index: usize },
+    Other,
+}
+
+pub(crate) struct ContextMenu {
+    pub(crate) pos: (f32, f32),
+    pub(crate) tracks: Vec<Track>,
+    pub(crate) source: MenuSource,
+    pub(crate) opened: Instant,
+}
+
+enum MenuItem {
+    Radio,
+    PlayNext,
+    AddToQueue,
+    GoToAlbum,
+    RemoveFromQueue(EntryId),
+    RemoveFromPlaylist { id: i64, index: usize },
+    ToLocal(i64),
+    ToSpotify(String),
+}
+
+impl Gui {
+    pub(crate) fn open_menu(&mut self, tracks: Vec<Track>, source: MenuSource) {
+        self.menu = Some(ContextMenu {
+            pos: self.mouse,
+            tracks,
+            source,
+            opened: Instant::now(),
+        });
+    }
+
+    pub(crate) fn draw_menu(&mut self, ui: &mut Ui, player: &Player) {
+        let Some(menu) = &self.menu else { return };
+        let t = ui.theme.clone();
+        let mut items: Vec<(String, Option<MenuItem>)> = Vec::new();
+        if menu.tracks.len() == 1 {
+            items.push(("Start radio".into(), Some(MenuItem::Radio)));
+        }
+        items.extend([
+            ("Play next".into(), Some(MenuItem::PlayNext)),
+            ("Add to queue".into(), Some(MenuItem::AddToQueue)),
+        ]);
+        if menu.tracks.len() == 1
+            && menu.tracks[0].album.is_some()
+            && matches!(menu.tracks[0].locator, TrackLocator::Local(_))
+        {
+            items.push(("Go to album".into(), Some(MenuItem::GoToAlbum)));
+        }
+        match menu.source {
+            MenuSource::Queue(id) => items.push((
+                "Remove from queue".into(),
+                Some(MenuItem::RemoveFromQueue(id)),
+            )),
+            MenuSource::LocalPlaylist { id, index } => items.push((
+                "Remove from playlist".into(),
+                Some(MenuItem::RemoveFromPlaylist { id, index }),
+            )),
+            MenuSource::Other => {}
+        }
+        items.push(("Add to playlist".into(), None));
+        let before = items.len();
+        for (p, _) in &self.sp.local {
+            items.push((p.name.clone(), Some(MenuItem::ToLocal(p.id))));
+        }
+        let all_local = menu
+            .tracks
+            .iter()
+            .all(|t| !matches!(t.locator, TrackLocator::Spotify { .. }));
+        if let Some(sp) = &self.sp.playlists {
+            for p in sp.iter().filter(|p| p.owned_by_me).take(14) {
+                let label = if all_local {
+                    format!("{} (Spotify · local not allowed)", p.name)
+                } else {
+                    format!("{} (Spotify)", p.name)
+                };
+                items.push((label, Some(MenuItem::ToSpotify(p.id.clone()))));
+            }
+        }
+        if items.len() == before {
+            items.push(("No playlists yet: create one in Playlists".into(), None));
+        }
+
+        const W: f32 = 272.0;
+        const IH: f32 = 32.0;
+        let h = items.len() as f32 * IH + 12.0;
+        let full = ui.c.bounds();
+        let x = menu.pos.0.min(full.w - W - 8.0);
+        let y = menu.pos.1.min(full.h - h - 8.0).max(8.0);
+        let rect = Rect::new(x, y, W, h);
+        // Opens with a quick fade and a short drop into place.
+        let e = ease_out(menu.opened.elapsed().as_secs_f32() / 0.16);
+        if e < 1.0 {
+            ui.anim.keep_alive();
+        }
+        ui.c.set_layer(1);
+        ui.c.push_fx(0.0, (e - 1.0) * 6.0, e);
+        ui.c.glow(
+            Rect::new(rect.x, rect.y + 6.0, rect.w, rect.h),
+            Color::BLACK.alpha(0.5),
+            12.0,
+            22.0,
+        );
+        ui.c.rect(rect, t.surface_hover, 12.0);
+        ui.c.outline(rect, t.line(), 12.0, 1.0);
+        let mut chosen = None;
+        for (i, (label, item)) in items.iter().enumerate() {
+            let row = Rect::new(x + 6.0, y + 6.0 + i as f32 * IH, W - 12.0, IH);
+            match item {
+                None => {
+                    ui.label(
+                        label,
+                        row.x + 12.0,
+                        row,
+                        row.w - 24.0,
+                        11.5,
+                        Weight::Medium,
+                        t.dim.alpha(0.8),
+                    );
+                }
+                Some(_) => {
+                    let hv = ui.hover_t(anim::id(("menu", i)), row);
+                    ui.c.rect(row, t.fg.alpha(0.06 * hv), 8.0);
+                    ui.label(
+                        label,
+                        row.x + 12.0 + 2.0 * hv,
+                        row,
+                        row.w - 24.0,
+                        t.font_size - 1.0,
+                        Weight::Regular,
+                        t.fg.alpha(0.82).lerp(t.fg, hv),
+                    );
+                    if ui.hovered(row) && ui.input.pressed {
+                        chosen = Some(i);
+                    }
+                }
+            }
+        }
+        ui.c.pop_fx();
+        ui.c.set_layer(0);
+        let clicked_outside = (ui.input.pressed || ui.input.right_pressed)
+            && !ui.hovered(rect)
+            && menu.opened.elapsed() > Duration::from_millis(50);
+        let menu = self.menu.take().expect("checked");
+        if let Some(i) = chosen {
+            if let Some(item) = items.into_iter().nth(i).and_then(|(_, it)| it) {
+                self.run_menu_item(item, menu.tracks, player);
+            }
+        } else if !clicked_outside
+            && !ui
+                .input
+                .keys
+                .iter()
+                .any(|k| k.key == crate::gui::ui::Key::Escape)
+        {
+            self.menu = Some(menu);
+        }
+    }
+
+    fn run_menu_item(&mut self, item: MenuItem, tracks: Vec<Track>, player: &Player) {
+        let n = tracks.len();
+        match item {
+            MenuItem::Radio => {
+                if let Some(t) = tracks.into_iter().next() {
+                    self.start_radio(t);
+                }
+            }
+            MenuItem::PlayNext => {
+                self.toast(format!("Playing {} next", count(n, "song")));
+                player.send(Cmd::PlayNext(tracks));
+            }
+            MenuItem::AddToQueue => {
+                self.toast(format!("Added {} to the queue", count(n, "song")));
+                player.send(Cmd::Enqueue(tracks));
+            }
+            MenuItem::GoToAlbum => {
+                if let Some(t) = tracks.first() {
+                    let t = t.clone();
+                    self.open_album_of(&t);
+                }
+            }
+            MenuItem::RemoveFromQueue(id) => player.send(Cmd::Remove(vec![id])),
+            MenuItem::RemoveFromPlaylist { id, index } => {
+                if let Some((_, existing)) = self.sp.local.iter().find(|(p, _)| p.id == id) {
+                    let mut list = existing.to_vec();
+                    if index < list.len() {
+                        list.remove(index);
+                        if let Err(e) = self.library.set_playlist_tracks(id, &list) {
+                            self.toast(format!("Couldn't update playlist: {e:#}"));
+                        }
+                    }
+                }
+            }
+            MenuItem::ToLocal(id) => {
+                if let Some((p, existing)) = self.sp.local.iter().find(|(p, _)| p.id == id).cloned()
+                {
+                    let mut list = existing.to_vec();
+                    list.extend(tracks);
+                    match self.library.set_playlist_tracks(id, &list) {
+                        Ok(()) => self.toast(format!("Added {} to {}", count(n, "song"), p.name)),
+                        Err(e) => self.toast(format!("Couldn't update playlist: {e:#}")),
+                    }
+                }
+            }
+            MenuItem::ToSpotify(pid) => {
+                let Some(sp) = self.spotify.clone() else {
+                    return;
+                };
+                let name = self
+                    .sp
+                    .playlists
+                    .as_ref()
+                    .and_then(|ps| ps.iter().find(|p| p.id == pid).map(|p| p.name.clone()))
+                    .unwrap_or_else(|| "playlist".into());
+                if tracks
+                    .iter()
+                    .all(|t| !matches!(t.locator, TrackLocator::Spotify { .. }))
+                {
+                    // Spotify playlists can only hold Spotify tracks.
+                    self.toast("Local tracks can't be added to Spotify playlists");
+                    return;
+                }
+                self.sp.adds.push((name, sp.add_to_playlist(&pid, &tracks)));
+            }
+        }
+    }
+}

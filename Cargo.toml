@@ -1,24 +1,11 @@
-[workspace]
-resolver = "3"
-members = ["crates/*"]
-
-[workspace.package]
+[package]
+name = "khoostic"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+default-run = "khoostic"
 
-[workspace.dependencies]
-khoostic-core = { path = "crates/khoostic-core" }
-khoostic-audio = { path = "crates/khoostic-audio" }
-khoostic-player = { path = "crates/khoostic-player" }
-khoostic-config = { path = "crates/khoostic-config" }
-khoostic-tui = { path = "crates/khoostic-tui" }
-khoostic-gui = { path = "crates/khoostic-gui" }
-khoostic-library = { path = "crates/khoostic-library" }
-khoostic-spotify = { path = "crates/khoostic-spotify" }
-khoostic-lastfm = { path = "crates/khoostic-lastfm" }
-khoostic-discovery = { path = "crates/khoostic-discovery" }
-
+[dependencies]
 anyhow = "1.0.104"
 thiserror = "2.0.21"
 tracing = "0.1.44"
@@ -26,29 +13,39 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 crossbeam-channel = "0.5.17"
 arc-swap = "1.9.5"
 parking_lot = "0.13.0"
+fastrand = "2.5.0"
+clap = { version = "4.6.7", features = ["derive"] }
 
+# Config and storage
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.2.1"
+toml_edit = "0.25.19"
+directories = "6.0.0"
+walkdir = "2.5.0"
+lofty = "0.25.5"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }
+
+# Audio
 symphonia = { version = "0.6.1", features = ["all"] }
 cpal = "0.18.2"
 rubato = "5.1.0"
 rtrb = "0.4.1"
 realfft = "3.5.1"
 
-clap = { version = "4.6.7", features = ["derive"] }
-crossterm = "0.29.0"
-walkdir = "2.5.0"
-fastrand = "2.5.0"
-ratatui = "0.30.2"
-serde = { version = "1.0.229", features = ["derive"] }
-toml = "1.2.1"
-toml_edit = "0.25.19"
-directories = "6.0.0"
-unicode-width = "0.2.3"
+# GUI
 winit = "0.30.13"
 wgpu = { version = "30.0.2", default-features = false, features = ["vulkan", "wgsl", "std"] }
 glyphon = "0.12.0"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 pollster = "1.0.1"
-png = "0.18"
+
+# TUI
+ratatui = "0.30.2"
+unicode-width = "0.2.3"
+
+# Spotify and Last.fm
 librespot-core = "0.8.0"
 librespot-oauth = "0.8.0"
 librespot-audio = "0.8.0"
@@ -60,41 +57,21 @@ http = "1.5.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls", "blocking"] }
 md-5 = "0.10.6"
-serde_json = "1.0.154"
-open = "5.4.5"
 sha2 = "0.10.9"
 base64 = "0.22.1"
 getrandom = "0.3.4"
 url = "2.5.8"
-lofty = "0.25.5"
-rusqlite = { version = "0.43.0", features = ["bundled"] }
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }
+open = "5.4.5"
 
-[package]
-name = "khoostic"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-khoostic-audio.workspace = true
-khoostic-player.workspace = true
-khoostic-library.workspace = true
-khoostic-spotify.workspace = true
-khoostic-lastfm.workspace = true
-khoostic-discovery.workspace = true
-anyhow.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-clap.workspace = true
-khoostic-config.workspace = true
-khoostic-tui.workspace = true
-khoostic-gui.workspace = true
+[dev-dependencies]
+png = "0.18"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 
-# Audio decode/DSP is unbearably slow unoptimized; optimize deps even in debug.
+# Audio decode/DSP is unbearably slow unoptimized; optimize deps even in debug. Their debug info
+# is useless at opt-level 3 and would quadruple the PDB (and link time).
 [profile.dev.package."*"]
 opt-level = 3
+debug = false

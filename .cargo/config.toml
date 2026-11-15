@@ -1,0 +1,4 @@
+# rust-lld ships with every Rust toolchain and links this (large, debug) binary several times
+# faster than MSVC's link.exe, which is most of an incremental build.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
