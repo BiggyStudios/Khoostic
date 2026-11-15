@@ -38,6 +38,7 @@ fastrand = "2.5.0"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.2.1"
+toml_edit = "0.25.19"
 directories = "6.0.0"
 unicode-width = "0.2.3"
 winit = "0.30.13"

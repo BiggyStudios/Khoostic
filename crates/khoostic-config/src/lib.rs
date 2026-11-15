@@ -19,6 +19,9 @@ pub struct Config {
     pub tui: TuiConfig,
     pub gui: GuiConfig,
     pub spotify: SpotifyConfig,
+    /// The file this was loaded from (or would be), for saving settings changed in the app.
+    #[serde(skip)]
+    pub source: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -161,6 +164,10 @@ pub struct GuiConfig {
     pub scale: f32,
     /// Wait for vblank. Off = lowest latency (mailbox/immediate) where supported.
     pub vsync: bool,
+    /// Frame rate while the window is focused and something moves (30, 60, 120, ...).
+    pub fps: u32,
+    /// Frame rate while the window is visible but not focused. Minimized windows don't render.
+    pub background_fps: u32,
     /// Corner radius of panels and rows, in logical pixels.
     pub corner_radius: f32,
     pub width: u32,
@@ -175,7 +182,9 @@ impl Default for GuiConfig {
             font_size: 14.0,
             scale: 1.0,
             vsync: true,
-            corner_radius: 8.0,
+            fps: 120,
+            background_fps: 30,
+            corner_radius: 10.0,
             width: 1200,
             height: 760,
             theme: GuiTheme::default(),
@@ -201,12 +210,12 @@ pub struct GuiTheme {
 impl Default for GuiTheme {
     fn default() -> Self {
         Self {
-            background: "#0e0e12".into(),
-            surface: "#17171d".into(),
-            surface_hover: "#202029".into(),
-            fg: "#e6e6ef".into(),
-            dim: "#7c7c8c".into(),
-            accent: "#89dceb".into(),
+            background: "#08080b".into(),
+            surface: "#101014".into(),
+            surface_hover: "#1b1b21".into(),
+            fg: "#ececf1".into(),
+            dim: "#86868f".into(),
+            accent: "#8ad7e8".into(),
             playing: "#a6e3a1".into(),
             spectrum: vec![
                 "#89dceb".into(),
@@ -230,11 +239,30 @@ impl Config {
             Some(p) => p,
             None => return Ok(Self::default()),
         };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self::parse(&text).with_context(|| format!("in {}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        let mut config = match std::fs::read_to_string(&path) {
+            Ok(text) => Self::parse(&text).with_context(|| format!("in {}", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        config.source = Some(path);
+        Ok(config)
+    }
+
+    /// Sets one integer setting (`"gui.fps"`) in the file at `path`, creating the file if
+    /// needed and keeping everything else in it, comments included.
+    pub fn save_int(path: &Path, dotted_key: &str, value: i64) -> anyhow::Result<()> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let out = set_int(&text, dotted_key, value)?;
+        // Never write something that wouldn't load back.
+        Self::parse(&out).context("the edited config would be invalid")?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
         }
+        std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))
     }
 
     pub fn parse(text: &str) -> anyhow::Result<Self> {
@@ -251,9 +279,39 @@ impl Config {
     }
 }
 
+fn set_int(text: &str, dotted_key: &str, value: i64) -> anyhow::Result<String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().context("parsing config")?;
+    let mut parts: Vec<&str> = dotted_key.split('.').collect();
+    let key = parts.pop().context("empty key")?;
+    let mut table = doc.as_table_mut();
+    for part in parts {
+        table = table
+            .entry(part)
+            .or_insert_with(toml_edit::table)
+            .as_table_mut()
+            .with_context(|| format!("{part} is not a table"))?;
+    }
+    table[key] = toml_edit::value(value);
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_int_keeps_comments_and_creates_tables() {
+        let text = "# mine
+[gui]
+font_size = 15 # big
+";
+        let out = set_int(text, "gui.fps", 60).unwrap();
+        assert!(out.contains("# mine") && out.contains("# big"));
+        let c = Config::parse(&out).unwrap();
+        assert_eq!((c.gui.fps, c.gui.font_size), (60, 15.0));
+        let fresh = Config::parse(&set_int("", "gui.background_fps", 10).unwrap()).unwrap();
+        assert_eq!(fresh.gui.background_fps, 10);
+    }
 
     #[test]
     fn empty_file_is_default() {
