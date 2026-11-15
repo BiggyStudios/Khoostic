@@ -465,13 +465,26 @@ impl Ui<'_> {
         );
     }
 
-    /// A one-line text field with a smoothly moving caret. Returns true when its text changed.
+    /// The search box. Returns true when its text changed.
     pub fn text_field(&mut self, field: &mut TextField, r: Rect, placeholder: &str) -> bool {
+        self.text_input(field, r, placeholder, Some(Icon::Search))
+    }
+
+    /// A one-line text field with a smoothly moving caret and an optional leading icon.
+    /// Returns true when its text changed.
+    pub fn text_input(
+        &mut self,
+        field: &mut TextField,
+        r: Rect,
+        placeholder: &str,
+        icon: Option<Icon>,
+    ) -> bool {
         let t = self.theme.clone();
         let dt = self.anim.dt();
         let hover = self.hovered(r);
         self.pointer |= hover;
-        let inner = Rect::new(r.x + 36.0, r.y, r.w - 46.0, r.h);
+        let lead = if icon.is_some() { 36.0 } else { 16.0 };
+        let inner = Rect::new(r.x + lead, r.y, r.w - lead - 10.0, r.h);
         let size = t.font_size - 1.0;
         field.cursor = field.cursor.min(field.text.len());
 
@@ -481,11 +494,15 @@ impl Ui<'_> {
             if hover {
                 // Click places the caret at the nearest character boundary.
                 let mx = self.input.mouse.map_or(0.0, |m| m.0) - inner.x + field.scroll_x;
-                field.cursor = self.nearest_boundary(&field.text, mx, size);
+                field.cursor = if field.secret {
+                    field.text.len()
+                } else {
+                    self.nearest_boundary(&field.text, mx, size)
+                };
                 field.idle = 0.0;
                 if !was {
-                    field.caret_x =
-                        self.measure(&field.text[..field.cursor], size, Weight::Regular);
+                    let before = field.shown_before_cursor();
+                    field.caret_x = self.measure(&before, size, Weight::Regular);
                 }
             }
         }
@@ -551,15 +568,18 @@ impl Ui<'_> {
         if f > 0.01 {
             self.c.outline(r, t.accent.alpha(0.55 * f), r.h / 2.0, 1.0);
         }
-        icons::draw(
-            self.c,
-            Icon::Search,
-            Rect::new(r.x + 13.0, r.y + (r.h - 16.0) / 2.0, 16.0, 16.0),
-            t.dim.lerp(t.fg, f * 0.7),
-        );
+        if let Some(icon) = icon {
+            icons::draw(
+                self.c,
+                icon,
+                Rect::new(r.x + 13.0, r.y + (r.h - 16.0) / 2.0, 16.0, 16.0),
+                t.dim.lerp(t.fg, f * 0.7),
+            );
+        }
 
         // Caret and horizontal scroll both glide to where they should be.
-        let target = self.measure(&field.text[..field.cursor], size, Weight::Regular);
+        let before = field.shown_before_cursor();
+        let target = self.measure(&before, size, Weight::Regular);
         let k = 1.0 - (-28.0 * dt).exp();
         if (target - field.caret_x).abs() > 0.3 {
             field.caret_x += (target - field.caret_x) * k;
@@ -599,9 +619,10 @@ impl Ui<'_> {
             );
         }
         if !field.text.is_empty() {
-            let y = self.top_for(&field.text, r, size, Weight::Regular);
+            let shown = field.shown();
+            let y = self.top_for(&shown, r, size, Weight::Regular);
             self.c.text_at(
-                field.text.clone(),
+                shown,
                 inner.x - field.scroll_x,
                 y,
                 size,
@@ -677,9 +698,36 @@ pub struct TextField {
     scroll_x: f32,
     /// Seconds since the last edit or caret move (drives the blink).
     idle: f32,
+    /// Shown as dots (API secrets).
+    pub secret: bool,
 }
 
 impl TextField {
+    pub fn secret() -> Self {
+        Self {
+            secret: true,
+            ..Default::default()
+        }
+    }
+
+    /// What is drawn: the text, or a dot per character for secrets.
+    fn shown(&self) -> String {
+        if self.secret {
+            "•".repeat(self.text.chars().count())
+        } else {
+            self.text.clone()
+        }
+    }
+
+    fn shown_before_cursor(&self) -> String {
+        let head = &self.text[..self.cursor.min(self.text.len())];
+        if self.secret {
+            "•".repeat(head.chars().count())
+        } else {
+            head.to_owned()
+        }
+    }
+
     pub fn set(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.cursor = self.text.len();

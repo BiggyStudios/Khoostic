@@ -145,8 +145,46 @@ impl Player {
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
-        let st = self.engine.status();
-        let q = self.queue.read();
+        snapshot(&self.engine, &self.queue)
+    }
+
+    /// A cheap, cloneable handle for background services (scrobbling, autoplay) that need
+    /// to watch playback and send commands from their own threads.
+    pub fn handle(&self) -> PlayerHandle {
+        PlayerHandle {
+            tx: self.tx.clone(),
+            engine: self.engine.clone(),
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+/// See [`Player::handle`]. Keeps working until the [`Player`] is dropped.
+#[derive(Clone)]
+pub struct PlayerHandle {
+    tx: Sender<PlayerCommand>,
+    engine: Arc<EngineHandle>,
+    queue: Arc<RwLock<Queue>>,
+}
+
+impl PlayerHandle {
+    pub fn send(&self, cmd: PlayerCommand) {
+        let _ = self.tx.send(cmd);
+    }
+
+    pub fn snapshot(&self) -> PlayerSnapshot {
+        snapshot(&self.engine, &self.queue)
+    }
+
+    pub fn queue(&self) -> &RwLock<Queue> {
+        &self.queue
+    }
+}
+
+fn snapshot(engine: &EngineHandle, queue: &RwLock<Queue>) -> PlayerSnapshot {
+    {
+        let st = engine.status();
+        let q = queue.read();
         // Prefer what the engine says is audible; the queue cursor can briefly lead it.
         let current = st
             .token

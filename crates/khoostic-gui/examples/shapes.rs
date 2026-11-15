@@ -102,6 +102,8 @@ fn main() -> anyhow::Result<()> {
         Icon::Back,
         Icon::Up,
         Icon::Spotify,
+        Icon::Radio,
+        Icon::Autoplay,
     ];
     for (i, icon) in icons.iter().enumerate() {
         let (x, y) = (

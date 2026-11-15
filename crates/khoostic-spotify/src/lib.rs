@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
-use crossbeam_channel::Receiver;
 use khoostic_audio::{AudioSource, SourceError};
 use khoostic_core::{Track, TrackLocator};
 use khoostic_player::SourceResolver;
@@ -53,20 +52,7 @@ pub struct AddOutcome {
     pub skipped_local: usize,
 }
 
-/// A result being computed in the background. Poll it from a UI frame.
-pub struct Pending<T>(Receiver<anyhow::Result<T>>);
-
-impl<T> Pending<T> {
-    pub fn poll(&self) -> Option<anyhow::Result<T>> {
-        self.0.try_recv().ok()
-    }
-
-    pub fn wait(self) -> anyhow::Result<T> {
-        self.0
-            .recv()
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("Spotify worker stopped")))
-    }
-}
+pub use khoostic_core::Pending;
 
 #[derive(Debug, Clone)]
 pub struct SpotifyConfig {
@@ -221,7 +207,7 @@ impl Spotify {
         F: FnOnce(Session) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
     {
-        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (tx, rx) = Pending::new();
         let inner = self.inner.clone();
         self.rt.spawn(async move {
             let work = async {
@@ -231,14 +217,20 @@ impl Spotify {
             let result = tokio::time::timeout(REQUEST_TIMEOUT, work)
                 .await
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("Spotify didn't answer in time")));
-            let _ = tx.send(result);
+            tx.resolve(result);
         });
-        Pending(rx)
+        rx
     }
 
     pub fn search(&self, query: &str, limit: u32) -> Pending<SearchResults> {
         let q = query.to_owned();
         self.with_session(move |s| async move { api::search(&s, &q, limit as usize).await })
+    }
+
+    /// Songs like `track_id` (a Spotify base62 id), from Spotify's radio.
+    pub fn radio(&self, track_id: &str, limit: usize) -> Pending<Vec<Track>> {
+        let id = track_id.to_owned();
+        self.with_session(move |s| async move { api::radio(&s, &id, limit).await })
     }
 
     pub fn playlists(&self) -> Pending<Vec<Playlist>> {

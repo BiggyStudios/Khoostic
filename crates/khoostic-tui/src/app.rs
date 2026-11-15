@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use khoostic_config::Config;
-use khoostic_core::Track;
+use khoostic_core::{Pending, Track};
+use khoostic_discovery::Discovery;
 use khoostic_library::Library;
 use khoostic_player::{Player, PlayerCommand as Cmd, PlayerEvent};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -85,6 +86,9 @@ pub struct App {
     pub browser: Browser,
     pub lib: LibState,
     pub pl: PlState,
+    pub discovery: Arc<Discovery>,
+    /// A song radio being put together: (seed, suggestions).
+    radio: Option<(Track, Pending<Vec<Track>>)>,
     pub vis: Visualizer,
     pub message: Option<Message>,
     /// Help overlay scroll offset when open.
@@ -106,6 +110,7 @@ impl App {
         player: Player,
         library: Arc<Library>,
         spotify: Option<Arc<khoostic_spotify::Spotify>>,
+        discovery: Arc<Discovery>,
         config: &Config,
     ) -> Self {
         let (theme, mut problems) = Theme::from_config(&config.tui.theme);
@@ -129,6 +134,8 @@ impl App {
             browser: Browser::new(start),
             lib: LibState::default(),
             pl: PlState::new(spotify),
+            discovery,
+            radio: None,
             vis: Visualizer::default(),
             message: None,
             help: None,
@@ -173,6 +180,18 @@ impl App {
                 self.error(msg);
             } else {
                 self.info(msg);
+            }
+        }
+        if let Some(result) = self.radio.as_ref().and_then(|r| r.1.poll()) {
+            let (seed, _) = self.radio.take().expect("checked");
+            match result {
+                Ok(t) if !t.is_empty() => {
+                    let n = t.len();
+                    khoostic_discovery::queue_radio(&self.player.handle(), &seed, t);
+                    self.info(format!("radio: {n} songs like “{}”", seed.title));
+                }
+                Ok(_) => self.error("couldn't find similar songs"),
+                Err(e) => self.error(format!("radio: {e:#}")),
             }
         }
         while let Ok(ev) = self.player.events().try_recv() {
@@ -890,6 +909,51 @@ impl App {
                     Err(e) => self.error(e),
                 }
             }
+            C::Radio => {
+                let seed = self
+                    .selected_tracks()
+                    .into_iter()
+                    .next()
+                    .or_else(|| self.player.snapshot().current.map(|e| (*e.track).clone()));
+                let Some(seed) = seed else {
+                    return self.error("nothing to start a radio from");
+                };
+                self.mode = Mode::Normal;
+                self.info(format!("finding songs like “{}”…", seed.title));
+                let pending = self.discovery.radio(&seed, 40);
+                self.radio = Some((seed, pending));
+            }
+            C::Autoplay(set) => {
+                let on = set.unwrap_or(!self.discovery.autoplay());
+                self.discovery.set_autoplay(on);
+                self.info(if on { "autoplay on" } else { "autoplay off" });
+            }
+            C::Lastfm(cmd) => {
+                use khoostic_lastfm::Status as L;
+                let Some(lf) = self.discovery.lastfm().cloned() else {
+                    return self.error("Last.fm isn't available");
+                };
+                match cmd {
+                    command::SpotifyCmd::Login if lf.status() == L::NoApiKey => self.error(
+                        "set [lastfm] api_key and api_secret in config.toml first (last.fm/api/account/create)",
+                    ),
+                    command::SpotifyCmd::Login => {
+                        lf.sign_in();
+                        self.info("allow Khoostic in the Last.fm tab that opened");
+                    }
+                    command::SpotifyCmd::Logout => {
+                        lf.sign_out();
+                        self.info("signed out of Last.fm");
+                    }
+                    command::SpotifyCmd::Status => self.info(match lf.status() {
+                        L::Connected(n) => format!("scrobbling as {n} ({} queued)", lf.queued()),
+                        L::SigningIn => "last.fm: finish in the browser".into(),
+                        L::NoApiKey => "last.fm: no API key in config".into(),
+                        L::Disconnected => "last.fm: not connected (:lastfm login)".into(),
+                        L::Failed(e) => format!("last.fm: {e}"),
+                    }),
+                }
+            }
             C::NewPlaylist(name) => match self.library.create_playlist(&name, &[]) {
                 Ok(_) => self.info(format!("created “{name}”: add tracks with :addto {name}")),
                 Err(e) => self.error(e.to_string()),
@@ -919,6 +983,7 @@ impl App {
         s.state == khoostic_audio::PlaybackState::Playing
             || a.bands.iter().any(|&b| b > 0.0)
             || self.pl.busy()
+            || self.radio.is_some()
     }
 
     /// Tracks under the cursor / visual selection in any track view (for :addto).

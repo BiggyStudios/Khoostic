@@ -31,6 +31,10 @@ pub enum Icon {
     Back,
     Up,
     Spotify,
+    /// Song radio: a signal radiating from a point.
+    Radio,
+    /// Autoplay (endless): an infinity sign.
+    Autoplay,
 }
 
 struct Pen<'a> {
@@ -222,6 +226,21 @@ pub fn draw(c: &mut Canvas, icon: Icon, r: Rect, color: Color) {
         }
         Icon::Back => p.poly(&[(14.5, 5.5), (8.0, 12.0), (14.5, 18.5)]),
         Icon::Up => p.poly(&[(5.5, 14.5), (12.0, 8.0), (18.5, 14.5)]),
+        Icon::Radio => {
+            p.dot(12.0, 12.0, 2.2);
+            p.arc(12.0, 12.0, 5.5, -FRAC_PI_4, FRAC_PI_4);
+            p.arc(12.0, 12.0, 5.5, PI - FRAC_PI_4, PI + FRAC_PI_4);
+            p.arc(12.0, 12.0, 9.0, -FRAC_PI_4, FRAC_PI_4);
+            p.arc(12.0, 12.0, 9.0, PI - FRAC_PI_4, PI + FRAC_PI_4);
+        }
+        Icon::Autoplay => {
+            // Two loops meeting in the middle, drawn as arcs so the crossing stays open.
+            p.arc(7.5, 12.0, 4.2, 0.25 * PI, 1.75 * PI);
+            p.arc(16.5, 12.0, 4.2, 1.25 * PI, 2.75 * PI);
+            let s = std::f32::consts::FRAC_1_SQRT_2 * 4.2;
+            p.line((7.5 + s, 12.0 - s), (16.5 - s, 12.0 + s));
+            p.line((7.5 + s, 12.0 + s), (16.5 - s, 12.0 - s));
+        }
         Icon::Spotify => {
             p.dot(12.0, 12.0, 10.0);
             p.color = Color::rgba8(16, 16, 20, 255);

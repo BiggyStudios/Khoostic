@@ -1,22 +1,24 @@
 # Khoostic — notes for coding agents
 
 Khoostic is a music player written in Rust: one binary (`khoostic`) with a vim-style TUI and a
-Vulkan-rendered GUI over a shared player core. Local files and Spotify (librespot) today; Last.fm, Navidrome/Subsonic, MPD, Discord
+Vulkan-rendered GUI over a shared player core. Local files, Spotify (librespot) and Last.fm today; Navidrome/Subsonic, MPD, Discord
 presence and listen-along jams are planned.
 
 ## Workspace
 
 | Crate | Owns |
 |---|---|
-| `khoostic-core` | `Track`, `TrackLocator` (+ URI form), `CoverRef`, `Queue`, natural sort. **No I/O.** |
+| `khoostic-core` | `Track`, `TrackLocator` (+ URI form), `CoverRef`, `Queue`, `Pending`, song matching, natural sort. **No I/O.** |
 | `khoostic-audio` | `AudioSource` trait, symphonia decoding, `Conditioner` (stereo + rubato), engine thread, cpal output, FFT analysis feed |
 | `khoostic-player` | `Player` controller (queue ↔ engine, gapless preload), `SourceResolver`s, file browser model |
 | `khoostic-library` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists |
 | `khoostic-spotify` | Browser sign-in (OAuth PKCE, cancellable local listener), library & search over Spotify's client API (spclient), librespot streaming as an `AudioSource`, `SpotifyResolver` |
-| `khoostic-config` | `config.toml` model; every field defaults, unknown keys are errors |
+| `khoostic-lastfm` | Last.fm: signed API client, browser sign-in, scrobble rules (`tracker.rs`, pure), background scrobbler with a persisted offline queue, similar tracks |
+| `khoostic-discovery` | Song radio (Spotify radio + Last.fm similar, matched to local files first, library-only fallback) and the autoplay watcher |
+| `khoostic-config` | `config.toml` model; every field defaults, unknown keys are errors; `save_value` edits one key in place |
 | `khoostic-tui` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
 | `khoostic-gui` | winit + wgpu (Vulkan only): SDF painter (boxes, triangles, lines, arcs), image pipeline, glyphon text, immediate-mode UI (`app.rs` chrome, `views.rs`/`spotify_views.rs`/`settings.rs` pages, `ui.rs` widgets, `icons.rs`, `anim.rs`) |
-| `src/main.rs` | CLI: `khoostic [tui]`, `gui`, `play`, `devices`, `config`, `spotify login/logout/status` |
+| `src/main.rs` | CLI: `khoostic [tui]`, `gui`, `play`, `devices`, `config`, `spotify` and `lastfm` `login/logout/status`; `start()` wires the shared services |
 
 Data flow: `AudioSource → Conditioner → SPSC ring → cpal callback → speakers`, with the callback
 tapping the same samples into the analysis thread (`ArcSwap<AnalysisFrame>`). The engine tracks

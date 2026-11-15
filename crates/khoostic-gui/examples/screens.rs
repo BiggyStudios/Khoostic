@@ -71,10 +71,18 @@ fn main() -> anyhow::Result<()> {
         },
         Resolvers::with_defaults(),
     )?;
+    let lastfm = khoostic_lastfm::Lastfm::with_dir("", "", true, tmp.join("lastfm"))?;
+    let discovery = khoostic_discovery::Discovery::new(
+        library.clone(),
+        Some(spotify.clone()),
+        Some(lastfm),
+        true,
+    );
     let mut h = Headless::new(
         &config,
         library.clone(),
         Some(spotify.clone()),
+        discovery,
         (1280, 800),
         1.0,
     )?;

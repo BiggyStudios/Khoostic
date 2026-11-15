@@ -82,6 +82,11 @@ pub enum Cmd {
     SpotifySearch(String),
     AddTo(String),
     NewPlaylist(String),
+    /// Song radio from the track under the cursor (or the playing one).
+    Radio,
+    /// Toggle (None) or set autoplay.
+    Autoplay(Option<bool>),
+    Lastfm(SpotifyCmd),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +126,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "add selected tracks to a playlist (not local → Spotify)",
     ),
     (":newpl <name>", "create a Khoostic playlist"),
+    (":radio", "songs like the one under the cursor (or playing)"),
+    (
+        ":autoplay [on|off]",
+        "keep playing similar songs when the queue ends",
+    ),
+    (
+        ":lastfm <login|logout|status>",
+        "scrobble to Last.fm (needs [lastfm] api_key, api_secret)",
+    ),
     (":<action>", "run any action by name, e.g. :next_track"),
 ];
 
@@ -180,6 +194,23 @@ pub fn parse(line: &str) -> Result<Cmd, String> {
         "sp" => Cmd::SpotifySearch(arg.ok_or("usage: :sp <search>")?.to_owned()),
         "addto" => Cmd::AddTo(arg.ok_or("usage: :addto <playlist name>")?.to_owned()),
         "newpl" => Cmd::NewPlaylist(arg.ok_or("usage: :newpl <name>")?.to_owned()),
+        "radio" => Cmd::Radio,
+        "autoplay" => Cmd::Autoplay(match arg {
+            None => None,
+            Some("on") => Some(true),
+            Some("off") => Some(false),
+            Some(a) => return Err(format!("autoplay: expected on or off, got {a:?}")),
+        }),
+        "lastfm" | "lfm" => Cmd::Lastfm(match arg {
+            Some("login") => SpotifyCmd::Login,
+            Some("logout") => SpotifyCmd::Logout,
+            None | Some("status") => SpotifyCmd::Status,
+            Some(a) => {
+                return Err(format!(
+                    "lastfm: expected login, logout or status, got {a:?}"
+                ));
+            }
+        }),
         "config" => Cmd::Config {
             init: arg == Some("init"),
         },

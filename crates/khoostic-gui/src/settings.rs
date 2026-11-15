@@ -1,4 +1,5 @@
-//! The Settings page: frame rates (saved to config.toml), library, audio and Spotify status.
+//! The Settings page: frame rates, playback, Last.fm, library, audio and Spotify (saved to
+//! config.toml where it applies).
 
 use khoostic_config::Config;
 use khoostic_player::{Player, PlayerSnapshot};
@@ -22,7 +23,19 @@ impl Gui {
     ) {
         let t = ui.theme.clone();
         let body = self.header(ui, r, "Settings", "Changes apply right away");
-        let mut y = body.y;
+        let mut ls = self.lists.get("settings").cloned().unwrap_or_default();
+        ls.height = body.h;
+        if ui.hovered(body) {
+            ls.target += ui.input.scroll;
+        }
+        ui.c.push_clip(Rect::new(
+            body.x - 10.0,
+            body.y - 4.0,
+            body.w + 20.0,
+            body.h + 4.0,
+        ));
+        let top = body.y - ls.scroll;
+        let mut y = top;
         let lx = body.x;
         let control_x = body.x + (body.w * 0.5).clamp(300.0, 460.0);
 
@@ -148,6 +161,129 @@ impl Gui {
         );
         y += 66.0;
 
+        section(ui, &mut y, "PLAYBACK");
+        row_text(
+            ui,
+            y,
+            "Autoplay",
+            "When the queue ends, keep playing songs like the last ones",
+        );
+        let on = self.discovery.autoplay() as usize;
+        if let Some(i) = ui.segmented(
+            anim::id("set-autoplay"),
+            control_x,
+            y + 3.0,
+            &["Off", "On"],
+            on,
+        ) && i != on
+        {
+            self.discovery.set_autoplay(i == 1);
+            self.save_bool("playback.autoplay", i == 1);
+        }
+        y += 66.0;
+
+        if let Some(lf) = self.discovery.lastfm().cloned() {
+            use khoostic_lastfm::Status as L;
+            section(ui, &mut y, "LAST.FM");
+            match lf.status() {
+                L::NoApiKey => {
+                    row_text(
+                        ui,
+                        y,
+                        "API account",
+                        "Last.fm needs one per app: create it free at last.fm/api/account/create",
+                    );
+                    let w = (body.right() - control_x).clamp(200.0, 360.0);
+                    ui.text_input(
+                        &mut self.lf_key,
+                        Rect::new(control_x, y, w, 36.0),
+                        "API key",
+                        None,
+                    );
+                    ui.text_input(
+                        &mut self.lf_secret,
+                        Rect::new(control_x, y + 44.0, w, 36.0),
+                        "Shared secret",
+                        None,
+                    );
+                    let ready = !self.lf_key.text.trim().is_empty()
+                        && !self.lf_secret.text.trim().is_empty();
+                    if ui.pill("Save", control_x, y + 88.0, ready).0 && ready {
+                        let (k, s) = (
+                            self.lf_key.text.trim().to_owned(),
+                            self.lf_secret.text.trim().to_owned(),
+                        );
+                        match lf.set_keys(&k, &s) {
+                            Ok(()) => {
+                                self.save_str("lastfm.api_key", &k);
+                                self.save_str("lastfm.api_secret", &s);
+                                self.lf_key.focused = false;
+                                self.lf_secret.focused = false;
+                                self.toast("Saved. Now connect your Last.fm account");
+                            }
+                            Err(e) => self.toast(format!("Last.fm: {e:#}")),
+                        }
+                    }
+                    y += 140.0;
+                }
+                status => {
+                    let (title, hint, action) = match &status {
+                        L::Connected(name) => (
+                            format!("Scrobbling as {name}"),
+                            match lf.queued() {
+                                0 => "Everything you've listened to is sent".to_string(),
+                                n => format!("{} waiting to be sent", count(n, "listen")),
+                            },
+                            "Sign out",
+                        ),
+                        L::SigningIn => (
+                            "Waiting for the browser…".into(),
+                            "Allow Khoostic in the Last.fm tab that opened".into(),
+                            "Cancel",
+                        ),
+                        L::Failed(e) => ("Not connected".into(), e.clone(), "Connect"),
+                        _ => (
+                            "Not connected".into(),
+                            "Sign in through your browser to scrobble".into(),
+                            "Connect",
+                        ),
+                    };
+                    row_text(ui, y, &title, &hint);
+                    if ui.pill(action, control_x, y + 3.0, false).0 {
+                        match action {
+                            "Sign out" => {
+                                lf.sign_out();
+                                self.toast("Signed out of Last.fm");
+                            }
+                            "Cancel" => lf.cancel_sign_in(),
+                            _ => lf.sign_in(),
+                        }
+                    }
+                    y += 58.0;
+                    row_text(
+                        ui,
+                        y,
+                        "Scrobbling",
+                        "Send what you play (songs count after half, or 4 minutes)",
+                    );
+                    let on = lf.scrobbling.load(std::sync::atomic::Ordering::Acquire) as usize;
+                    if let Some(i) = ui.segmented(
+                        anim::id("set-scrobble"),
+                        control_x,
+                        y + 3.0,
+                        &["Off", "On"],
+                        on,
+                    ) && i != on
+                    {
+                        lf.scrobbling
+                            .store(i == 1, std::sync::atomic::Ordering::Release);
+                        self.save_bool("lastfm.scrobble", i == 1);
+                    }
+                    y += 66.0;
+                }
+            }
+        }
+
         if let Some(sp) = self.spotify.clone() {
             section(ui, &mut y, "SPOTIFY");
             let (title, hint, action) = match sp.status() {
@@ -187,13 +323,35 @@ impl Gui {
                 }
             }
         }
+        y += 66.0;
+        ui.c.pop_clip();
+        // Scrolls when the window is too short for everything.
+        let content = y - top;
+        ls.target = ls.target.clamp(0.0, (content - body.h).max(0.0));
+        self.lists.insert("settings", ls);
+    }
+
+    pub(crate) fn save_bool(&mut self, key: &str, value: bool) {
+        if let Some(path) = self.config_path.clone()
+            && let Err(e) = Config::save_value(&path, key, value)
+        {
+            self.toast(format!("Couldn't save: {e:#}"));
+        }
+    }
+
+    pub(crate) fn save_str(&mut self, key: &str, value: &str) {
+        if let Some(path) = self.config_path.clone()
+            && let Err(e) = Config::save_value(&path, key, value)
+        {
+            self.toast(format!("Couldn't save: {e:#}"));
+        }
     }
 
     fn save(&mut self, key: &str, value: u32) {
         let Some(path) = self.config_path.clone() else {
             return self.toast("No config location; the change lasts until you quit");
         };
-        if let Err(e) = Config::save_int(&path, key, value as i64) {
+        if let Err(e) = Config::save_value(&path, key, value as i64) {
             self.toast(format!("Couldn't save: {e:#}"));
         }
     }

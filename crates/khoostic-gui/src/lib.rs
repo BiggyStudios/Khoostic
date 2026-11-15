@@ -49,6 +49,7 @@ pub fn run(
     player: Player,
     library: Arc<Library>,
     spotify: Option<Arc<khoostic_spotify::Spotify>>,
+    discovery: Arc<khoostic_discovery::Discovery>,
     config: &Config,
     tracks: Vec<Track>,
     autoplay: bool,
@@ -60,7 +61,7 @@ pub fn run(
             PlayerCommand::Enqueue(tracks)
         });
     }
-    let (gui, problems) = Gui::new(config, library, spotify);
+    let (gui, problems) = Gui::new(config, library, spotify, discovery);
     let mut app = WinitApp {
         player,
         config: config.clone(),
@@ -447,6 +448,7 @@ impl Headless {
         config: &Config,
         library: Arc<Library>,
         spotify: Option<Arc<khoostic_spotify::Spotify>>,
+        discovery: Arc<khoostic_discovery::Discovery>,
         size: (u32, u32),
         scale: f32,
     ) -> anyhow::Result<Self> {
@@ -457,7 +459,7 @@ impl Headless {
             Some(config.gui.font.clone()),
         );
         Ok(Self {
-            gui: Gui::new(config, library, spotify).0,
+            gui: Gui::new(config, library, spotify, discovery).0,
             renderer,
             size,
             scale,

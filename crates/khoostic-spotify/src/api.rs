@@ -13,8 +13,8 @@ use anyhow::{Context as _, bail};
 use http::header::{CONTENT_TYPE, HeaderValue};
 use http::{HeaderMap, Method};
 use khoostic_core::{CoverRef, Track, TrackLocator};
-use librespot_core::SpotifyId;
 use librespot_core::session::Session;
+use librespot_core::{SpotifyId, SpotifyUri};
 use librespot_protocol::context_page::ContextPage;
 use librespot_protocol::extended_metadata::{BatchedEntityRequest, EntityRequest, ExtensionQuery};
 use librespot_protocol::extension_kind::ExtensionKind;
@@ -283,6 +283,29 @@ pub async fn saved_tracks(session: &Session) -> anyhow::Result<Vec<Track>> {
 pub async fn album_tracks(session: &Session, id: &str) -> anyhow::Result<Vec<Track>> {
     let uris = context_uris(session, &format!("spotify:album:{id}"), 2_000).await?;
     tracks(session, &uris).await
+}
+
+/// Spotify's radio for a track: the songs of its generated radio playlist (seed excluded).
+pub async fn radio(session: &Session, track_id: &str, limit: usize) -> anyhow::Result<Vec<Track>> {
+    let uri = SpotifyUri::from_uri(&format!("spotify:track:{track_id}"))?;
+    let body = session
+        .spclient()
+        .get_radio_for_track(&uri)
+        .await
+        .context("asking Spotify for a radio")?;
+    let v: serde_json::Value = serde_json::from_slice(&body)?;
+    let Some(station) = v["mediaItems"]
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|m| m["uri"].as_str())
+    else {
+        return Ok(Vec::new());
+    };
+    let uris = context_uris(session, station, limit + 1).await?;
+    let mut found = tracks(session, &uris).await?;
+    found.retain(|t| !matches!(&t.locator, TrackLocator::Spotify { id } if id == track_id));
+    found.truncate(limit);
+    Ok(found)
 }
 
 /// Track search. Albums are the distinct albums among the matching tracks; Spotify's client

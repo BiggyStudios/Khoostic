@@ -26,7 +26,8 @@ fn main() -> anyhow::Result<()> {
     let tmp = std::env::temp_dir().join("khoostic-example-lib");
     let library = khoostic_library::Library::open(&tmp.join("lib.db"), &tmp.join("covers"))?;
     library.scan_blocking(&config.library.music_dirs)?;
-    let mut app = App::new(player, library, None, &config);
+    let discovery = khoostic_discovery::Discovery::new(library.clone(), None, None, false);
+    let mut app = App::new(player, library, None, discovery, &config);
     let mut term = Terminal::new(TestBackend::new(100, 24))?;
 
     let mut screen = |app: &mut App, label: &str| -> anyhow::Result<()> {
@@ -97,6 +98,13 @@ fn main() -> anyhow::Result<()> {
     typed(&mut app, "seek 1:00");
     keys(&mut app, "s");
     screen(&mut app, "after :vol 42, :seek 1:00, s")?;
+    keys(&mut app, "gs");
+    keys(&mut app, ":");
+    typed(&mut app, "radio");
+    std::thread::sleep(Duration::from_millis(400));
+    app.tick();
+    keys(&mut app, "gq");
+    screen(&mut app, "after :radio (library-only fallback)")?;
     keys(&mut app, ":");
     typed(&mut app, "bogus");
     screen(&mut app, "error message")?;

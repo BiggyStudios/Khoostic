@@ -1,12 +1,15 @@
 //! Khoostic — one binary, several faces: `khoostic` (TUI), `khoostic gui`, `khoostic play`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use khoostic_audio::EngineConfig;
 use khoostic_config::Config;
+use khoostic_discovery::Discovery;
+use khoostic_lastfm::Lastfm;
 use khoostic_library::Library;
 use khoostic_player::{Player, Resolvers};
 use khoostic_spotify::{Bitrate, Spotify, SpotifyConfig, Status};
@@ -61,6 +64,11 @@ enum Mode {
         #[command(subcommand)]
         action: SpotifyAction,
     },
+    /// Last.fm scrobbling: `login` opens your browser (needs [lastfm] api_key and api_secret).
+    Lastfm {
+        #[command(subcommand)]
+        action: SpotifyAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -91,11 +99,17 @@ fn main() -> anyhow::Result<()> {
         Mode::Tui { paths } => tui(engine, &config, &paths, false, false),
         Mode::Play { paths, shuffle } => tui(engine, &config, &paths, true, shuffle),
         Mode::Gui { paths, play } => {
-            let library = open_library(&config)?;
-            let spotify = open_spotify(&config, true);
-            let tracks = library.tracks_for_paths(&paths);
-            let player = Player::start(engine, resolvers(&spotify))?;
-            khoostic_gui::run(player, library, spotify, &config, tracks, play)
+            let (player, s) = start(engine, &config)?;
+            let tracks = s.library.tracks_for_paths(&paths);
+            khoostic_gui::run(
+                player,
+                s.library,
+                s.spotify,
+                s.discovery,
+                &config,
+                tracks,
+                play,
+            )
         }
         Mode::Devices => {
             for name in khoostic_audio::output::device_names()? {
@@ -104,6 +118,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Mode::Spotify { action } => spotify_cli(&config, action),
+        Mode::Lastfm { action } => lastfm_cli(&config, action),
         Mode::Config { init } => {
             let path = match cli.config {
                 Some(p) => p,
@@ -127,23 +142,106 @@ fn tui(
     autoplay: bool,
     shuffle: bool,
 ) -> anyhow::Result<()> {
-    let library = open_library(config)?;
-    let tracks = library.tracks_for_paths(paths);
+    let (player, s) = start(engine, config)?;
+    let tracks = s.library.tracks_for_paths(paths);
     if autoplay && tracks.is_empty() {
         anyhow::bail!("no playable audio files found");
     }
-    let spotify = open_spotify(config, true);
-    let player = Player::start(engine, resolvers(&spotify))?;
     if shuffle {
         player.send(khoostic_player::PlayerCommand::SetShuffle(true));
     }
     khoostic_tui::run(
         player,
-        library,
-        spotify,
+        s.library,
+        s.spotify,
+        s.discovery,
         config,
         khoostic_tui::Launch { tracks, autoplay },
     )
+}
+
+struct Services {
+    library: Arc<Library>,
+    spotify: Option<Arc<Spotify>>,
+    discovery: Arc<Discovery>,
+}
+
+/// Everything both interfaces share: library, Spotify, Last.fm (scrobbling in the background),
+/// radio/autoplay, and the player wired to them.
+fn start(engine: EngineConfig, config: &Config) -> anyhow::Result<(Player, Services)> {
+    let library = open_library(config)?;
+    let spotify = open_spotify(config, true);
+    let lastfm = open_lastfm(config);
+    let player = Player::start(engine, resolvers(&spotify))?;
+    if let Some(l) = &lastfm {
+        l.start_scrobbler(player.handle());
+    }
+    let discovery = Discovery::new(
+        library.clone(),
+        spotify.clone(),
+        lastfm,
+        config.playback.autoplay,
+    );
+    discovery.start_autoplay(player.handle());
+    Ok((
+        player,
+        Services {
+            library,
+            spotify,
+            discovery,
+        },
+    ))
+}
+
+fn open_lastfm(config: &Config) -> Option<Arc<Lastfm>> {
+    let c = &config.lastfm;
+    match Lastfm::new(&c.api_key, &c.api_secret, c.scrobble) {
+        Ok(l) => Some(l),
+        Err(e) => {
+            tracing::warn!("Last.fm unavailable: {e:#}");
+            None
+        }
+    }
+}
+
+fn lastfm_cli(config: &Config, action: SpotifyAction) -> anyhow::Result<()> {
+    use khoostic_lastfm::Status as L;
+    let lf = open_lastfm(config).context("Last.fm support couldn't start")?;
+    match action {
+        SpotifyAction::Logout => {
+            lf.sign_out();
+            println!("Signed out of Last.fm.");
+            return Ok(());
+        }
+        SpotifyAction::Login => {
+            if lf.status() == L::NoApiKey {
+                anyhow::bail!(
+                    "set [lastfm] api_key and api_secret first (create them at https://www.last.fm/api/account/create)"
+                );
+            }
+            println!("Opening your browser to allow Khoostic on Last.fm…");
+            lf.sign_in();
+        }
+        SpotifyAction::Status => {}
+    }
+    loop {
+        match lf.status() {
+            L::SigningIn => std::thread::sleep(Duration::from_millis(200)),
+            L::Connected(name) => {
+                println!("Scrobbling to Last.fm as {name} ({} queued).", lf.queued());
+                return Ok(());
+            }
+            L::NoApiKey => {
+                println!("No Last.fm API account set ([lastfm] api_key, api_secret).");
+                return Ok(());
+            }
+            L::Disconnected => {
+                println!("Not connected. Run `khoostic lastfm login`.");
+                return Ok(());
+            }
+            L::Failed(e) => anyhow::bail!(e),
+        }
+    }
 }
 
 /// Spotify client, reconnecting a previous session in the background. `None` if it can't

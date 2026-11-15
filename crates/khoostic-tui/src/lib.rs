@@ -37,10 +37,11 @@ pub fn run(
     player: Player,
     library: Arc<Library>,
     spotify: Option<Arc<khoostic_spotify::Spotify>>,
+    discovery: Arc<khoostic_discovery::Discovery>,
     config: &Config,
     launch: Launch,
 ) -> anyhow::Result<()> {
-    let mut app = App::new(player, library, spotify, config);
+    let mut app = App::new(player, library, spotify, discovery, config);
     if !launch.tracks.is_empty() {
         app.player.send(if launch.autoplay {
             PlayerCommand::EnqueueAndPlay(launch.tracks)

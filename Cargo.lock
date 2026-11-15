@@ -2189,7 +2189,9 @@ dependencies = [
  "clap",
  "khoostic-audio",
  "khoostic-config",
+ "khoostic-discovery",
  "khoostic-gui",
+ "khoostic-lastfm",
  "khoostic-library",
  "khoostic-player",
  "khoostic-spotify",
@@ -2231,7 +2233,24 @@ dependencies = [
 name = "khoostic-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "crossbeam-channel",
  "fastrand",
+]
+
+[[package]]
+name = "khoostic-discovery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fastrand",
+ "khoostic-audio",
+ "khoostic-core",
+ "khoostic-lastfm",
+ "khoostic-library",
+ "khoostic-player",
+ "khoostic-spotify",
+ "tracing",
 ]
 
 [[package]]
@@ -2247,6 +2266,8 @@ dependencies = [
  "khoostic-audio",
  "khoostic-config",
  "khoostic-core",
+ "khoostic-discovery",
+ "khoostic-lastfm",
  "khoostic-library",
  "khoostic-player",
  "khoostic-spotify",
@@ -2255,6 +2276,24 @@ dependencies = [
  "tracing",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "khoostic-lastfm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "khoostic-core",
+ "khoostic-player",
+ "md-5",
+ "open",
+ "parking_lot 0.13.0",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2330,6 +2369,8 @@ dependencies = [
  "khoostic-audio",
  "khoostic-config",
  "khoostic-core",
+ "khoostic-discovery",
+ "khoostic-lastfm",
  "khoostic-library",
  "khoostic-player",
  "khoostic-spotify",
@@ -2650,6 +2691,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
+]
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
 ]
 
 [[package]]
@@ -4401,7 +4452,9 @@ checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
  "base64 0.23.1",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",

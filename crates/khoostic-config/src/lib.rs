@@ -19,6 +19,8 @@ pub struct Config {
     pub tui: TuiConfig,
     pub gui: GuiConfig,
     pub spotify: SpotifyConfig,
+    pub lastfm: LastfmConfig,
+    pub playback: PlaybackConfig,
     /// The file this was loaded from (or would be), for saving settings changed in the app.
     #[serde(skip)]
     pub source: Option<PathBuf>,
@@ -153,6 +155,39 @@ impl Default for SpotifyConfig {
     }
 }
 
+/// Last.fm needs an API account of your own (free, instant): https://www.last.fm/api/account/create
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct LastfmConfig {
+    pub api_key: String,
+    pub api_secret: String,
+    /// Send what you listen to (once signed in).
+    pub scrobble: bool,
+}
+
+impl Default for LastfmConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            api_secret: String::new(),
+            scrobble: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PlaybackConfig {
+    /// When the queue runs out, keep playing similar songs.
+    pub autoplay: bool,
+}
+
+impl Default for PlaybackConfig {
+    fn default() -> Self {
+        Self { autoplay: true }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct GuiConfig {
@@ -248,15 +283,19 @@ impl Config {
         Ok(config)
     }
 
-    /// Sets one integer setting (`"gui.fps"`) in the file at `path`, creating the file if
-    /// needed and keeping everything else in it, comments included.
-    pub fn save_int(path: &Path, dotted_key: &str, value: i64) -> anyhow::Result<()> {
+    /// Sets one setting (`"gui.fps"` = 120, `"lastfm.api_key"` = "…") in the file at `path`,
+    /// creating the file if needed and keeping everything else in it, comments included.
+    pub fn save_value<V: Into<toml_edit::Value>>(
+        path: &Path,
+        dotted_key: &str,
+        value: V,
+    ) -> anyhow::Result<()> {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        let out = set_int(&text, dotted_key, value)?;
+        let out = set_value(&text, dotted_key, value.into())?;
         // Never write something that wouldn't load back.
         Self::parse(&out).context("the edited config would be invalid")?;
         if let Some(dir) = path.parent() {
@@ -279,7 +318,7 @@ impl Config {
     }
 }
 
-fn set_int(text: &str, dotted_key: &str, value: i64) -> anyhow::Result<String> {
+fn set_value(text: &str, dotted_key: &str, value: toml_edit::Value) -> anyhow::Result<String> {
     let mut doc: toml_edit::DocumentMut = text.parse().context("parsing config")?;
     let mut parts: Vec<&str> = dotted_key.split('.').collect();
     let key = parts.pop().context("empty key")?;
@@ -291,7 +330,7 @@ fn set_int(text: &str, dotted_key: &str, value: i64) -> anyhow::Result<String> {
             .as_table_mut()
             .with_context(|| format!("{part} is not a table"))?;
     }
-    table[key] = toml_edit::value(value);
+    table[key] = toml_edit::Item::Value(value);
     Ok(doc.to_string())
 }
 
@@ -300,16 +339,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn set_int_keeps_comments_and_creates_tables() {
+    fn set_value_keeps_comments_and_creates_tables() {
         let text = "# mine
 [gui]
 font_size = 15 # big
 ";
-        let out = set_int(text, "gui.fps", 60).unwrap();
+        let out = set_value(text, "gui.fps", 60.into()).unwrap();
         assert!(out.contains("# mine") && out.contains("# big"));
         let c = Config::parse(&out).unwrap();
         assert_eq!((c.gui.fps, c.gui.font_size), (60, 15.0));
-        let fresh = Config::parse(&set_int("", "gui.background_fps", 10).unwrap()).unwrap();
+        let fresh =
+            Config::parse(&set_value("", "gui.background_fps", 10.into()).unwrap()).unwrap();
         assert_eq!(fresh.gui.background_fps, 10);
     }
 

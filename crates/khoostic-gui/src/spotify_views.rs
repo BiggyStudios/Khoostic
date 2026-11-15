@@ -55,6 +55,7 @@ pub(crate) struct ContextMenu {
 }
 
 enum MenuItem {
+    Radio,
     PlayNext,
     AddToQueue,
     GoToAlbum,
@@ -667,10 +668,14 @@ impl Gui {
     pub(crate) fn draw_menu(&mut self, ui: &mut Ui, player: &Player) {
         let Some(menu) = &self.menu else { return };
         let t = ui.theme.clone();
-        let mut items: Vec<(String, Option<MenuItem>)> = vec![
+        let mut items: Vec<(String, Option<MenuItem>)> = Vec::new();
+        if menu.tracks.len() == 1 {
+            items.push(("Start radio".into(), Some(MenuItem::Radio)));
+        }
+        items.extend([
             ("Play next".into(), Some(MenuItem::PlayNext)),
             ("Add to queue".into(), Some(MenuItem::AddToQueue)),
-        ];
+        ]);
         if menu.tracks.len() == 1
             && menu.tracks[0].album.is_some()
             && matches!(menu.tracks[0].locator, TrackLocator::Local(_))
@@ -790,6 +795,11 @@ impl Gui {
     fn run_menu_item(&mut self, item: MenuItem, tracks: Vec<Track>, player: &Player) {
         let n = tracks.len();
         match item {
+            MenuItem::Radio => {
+                if let Some(t) = tracks.into_iter().next() {
+                    self.start_radio(t);
+                }
+            }
             MenuItem::PlayNext => {
                 self.toast(format!("Playing {} next", count(n, "song")));
                 player.send(Cmd::PlayNext(tracks));
@@ -879,129 +889,6 @@ impl Gui {
             View::SpotifyAlbum { id, .. } => self.sp.tracks.get(&format!("al:{id}")).cloned(),
             View::Liked => self.sp.tracks.get("liked").cloned(),
             _ => None,
-        }
-    }
-
-    /// "Library | Spotify" tabs on the search page (only when Spotify is connected).
-    /// Returns true when the Spotify tab is active.
-    pub(crate) fn search_tabs(&mut self, ui: &mut Ui, r: Rect) -> bool {
-        if !self.spotify.as_ref().is_some_and(|s| s.is_connected()) {
-            self.search_spotify = false;
-            return false;
-        }
-        let t = ui.theme;
-        let seg_w = ui
-            .measure("Library", t.font_size - 1.0, Weight::Medium)
-            .max(ui.measure("Spotify", t.font_size - 1.0, Weight::Medium))
-            + 30.0;
-        let x = r.right() - 2.0 * seg_w - 6.0;
-        let sel = self.search_spotify as usize;
-        if let Some(i) = ui.segmented(
-            anim::id("search-tabs"),
-            x,
-            r.y + 4.0,
-            &["Library", "Spotify"],
-            sel,
-        ) {
-            self.search_spotify = i == 1;
-        }
-        self.search_spotify
-    }
-
-    pub(crate) fn spotify_search_view(
-        &mut self,
-        ui: &mut Ui,
-        r: Rect,
-        player: &Player,
-        snap: &PlayerSnapshot,
-        a: &khoostic_audio::AnalysisFrame,
-        q: &str,
-    ) {
-        let t = ui.theme.clone();
-        let results = self.spotify_search(q);
-        let stale = self.sp.search.as_ref().is_some_and(|s| s.0 != q);
-        let sub = match (&results, stale) {
-            (None, _) => "Searching Spotify…".to_string(),
-            (Some(_), true) => "Updating…".to_string(),
-            (Some(res), false) => format!(
-                "{} · {}",
-                count(res.albums.len(), "album"),
-                count(res.tracks.len(), "song")
-            ),
-        };
-        let body = self.header(ui, r, &format!("“{q}” on Spotify"), &sub);
-        let Some(res) = results else { return };
-        let mut list = body;
-        if !res.albums.is_empty() {
-            let strip_h = 236.0f32.min(body.h * 0.45);
-            let strip = Rect::new(body.x, body.y, body.w, strip_h);
-            const TILE: f32 = 150.0;
-            ui.c.push_clip(strip);
-            for (i, al) in res.albums.iter().enumerate() {
-                let x = strip.x + i as f32 * (TILE + 18.0);
-                if x > strip.right() {
-                    break;
-                }
-                let hover = ui.hovered(Rect::new(x, strip.y, TILE, TILE + 48.0));
-                let h = ui
-                    .anim
-                    .to(anim::id(("strip", i)), hover as u8 as f32, anim::FAST);
-                ui.pointer |= hover;
-                let cover = Rect::new(x, strip.y + 4.0 - 4.0 * h, TILE, TILE);
-                if h > 0.01 {
-                    ui.c.glow(
-                        Rect::new(cover.x + 4.0, cover.y + 10.0, cover.w - 8.0, cover.h - 6.0),
-                        Color::BLACK.alpha(0.55 * h),
-                        t.radius,
-                        16.0,
-                    );
-                }
-                ui.cover(
-                    cover,
-                    al.cover.as_ref(),
-                    khoostic_library::CoverSize::Large,
-                    t.radius,
-                    &al.name,
-                );
-                ui.label(
-                    &al.name,
-                    x,
-                    Rect::new(x, strip.y + TILE + 6.0, TILE, 20.0),
-                    TILE,
-                    t.font_size - 0.5,
-                    Weight::Medium,
-                    t.fg,
-                );
-                let artist = al.artist.clone().unwrap_or_default();
-                ui.label(
-                    &artist,
-                    x,
-                    Rect::new(x, strip.y + TILE + 26.0, TILE, 18.0),
-                    TILE,
-                    12.0,
-                    Weight::Regular,
-                    t.dim,
-                );
-                if hover && ui.input.pressed {
-                    self.navigate(View::SpotifyAlbum {
-                        id: al.id.clone(),
-                        name: al.name.clone(),
-                    });
-                }
-            }
-            ui.c.pop_clip();
-            list = Rect::new(body.x, body.y + strip_h, body.w, body.h - strip_h);
-        }
-        if !res.tracks.is_empty() {
-            let tracks = Arc::new(res.tracks.clone());
-            let list = crate::views::column_header(ui, list, true, true);
-            let style = crate::views::TrackListStyle {
-                covers: true,
-                album_column: true,
-                track_numbers: false,
-            };
-            let action = self.track_list(ui, list, "sp-search", &tracks, style, snap, a);
-            self.apply_row_action(action, &tracks, player);
         }
     }
 }

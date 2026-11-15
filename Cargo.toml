@@ -16,6 +16,8 @@ khoostic-tui = { path = "crates/khoostic-tui" }
 khoostic-gui = { path = "crates/khoostic-gui" }
 khoostic-library = { path = "crates/khoostic-library" }
 khoostic-spotify = { path = "crates/khoostic-spotify" }
+khoostic-lastfm = { path = "crates/khoostic-lastfm" }
+khoostic-discovery = { path = "crates/khoostic-discovery" }
 
 anyhow = "1.0.104"
 thiserror = "2.0.21"
@@ -56,7 +58,8 @@ protobuf = "3.7.2"
 protobuf-json-mapping = "3.7.2"
 http = "1.5.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls", "blocking"] }
+md-5 = "0.10.6"
 serde_json = "1.0.154"
 open = "5.4.5"
 sha2 = "0.10.9"
@@ -78,6 +81,8 @@ khoostic-audio.workspace = true
 khoostic-player.workspace = true
 khoostic-library.workspace = true
 khoostic-spotify.workspace = true
+khoostic-lastfm.workspace = true
+khoostic-discovery.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

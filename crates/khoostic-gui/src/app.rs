@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use khoostic_audio::{AnalysisFrame, PlaybackState};
 use khoostic_config::Config;
-use khoostic_core::{EntryId, RepeatMode, Track, TrackLocator};
+use khoostic_core::{EntryId, Pending, RepeatMode, Track, TrackLocator};
+use khoostic_discovery::Discovery;
 use khoostic_library::{Album, Artist, CoverSize, Library, TrackOrder};
 use khoostic_player::browse::Browser;
 use khoostic_player::{Player, PlayerCommand as Cmd, PlayerSnapshot};
@@ -119,6 +120,13 @@ impl ListState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SearchMode {
+    All,
+    Library,
+    Spotify,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Drag {
     Seek(f32),
@@ -134,7 +142,10 @@ pub(crate) struct LibCache {
     pub songs: Arc<Vec<Track>>,
     /// Tracks of the currently open album/artist page.
     pub detail: Option<(View, Arc<Vec<Track>>)>,
+    /// What the search page lists (library + Spotify), keyed by query and sources.
     pub search: Option<(String, Arc<Vec<Track>>)>,
+    /// Library-only matches for the current query.
+    pub lib_search: Option<(String, Arc<Vec<Track>>)>,
 }
 
 /// The playback position as shown: continuous between the engine's (buffer-sized) updates,
@@ -214,8 +225,14 @@ pub struct Gui {
     pub(crate) menu: Option<crate::spotify_views::ContextMenu>,
     /// Last known mouse position (for anchoring menus).
     pub(crate) mouse: (f32, f32),
-    /// Search shows Spotify results instead of the library.
-    pub(crate) search_spotify: bool,
+    /// Which sources the search page shows.
+    pub(crate) search_mode: SearchMode,
+    pub discovery: Arc<Discovery>,
+    /// A song radio being put together: (seed, suggestions).
+    pub(crate) radio: Option<(Track, Pending<Vec<Track>>)>,
+    /// Last.fm API key/secret inputs on the Settings page.
+    pub(crate) lf_key: TextField,
+    pub(crate) lf_secret: TextField,
     anims: Anims,
     /// The view the page transition last started for.
     shown_view: View,
@@ -251,6 +268,7 @@ impl Gui {
         config: &Config,
         library: Arc<Library>,
         spotify: Option<Arc<khoostic_spotify::Spotify>>,
+        discovery: Arc<Discovery>,
     ) -> (Self, Vec<String>) {
         let fetch = spotify
             .clone()
@@ -283,7 +301,11 @@ impl Gui {
             sp: Default::default(),
             menu: None,
             mouse: (0.0, 0.0),
-            search_spotify: false,
+            search_mode: SearchMode::All,
+            discovery,
+            radio: None,
+            lf_key: TextField::default(),
+            lf_secret: TextField::secret(),
             anims: Anims::default(),
             shown_view: View::Albums,
             view_since: Instant::now() - Duration::from_secs(1),
@@ -344,6 +366,7 @@ impl Gui {
         self.cache.songs = Arc::new(self.library.all_tracks(TrackOrder::Artist));
         self.cache.detail = None;
         self.cache.search = None;
+        self.cache.lib_search = None;
         // An empty library is better shown as files the first time.
         if self.cache.albums.is_empty()
             && self.cache.songs.is_empty()
@@ -381,7 +404,8 @@ impl Gui {
         let snap = player.snapshot();
         let analysis = player.analysis();
         self.clock.update(&snap, dt);
-        if !self.search.focused && self.menu.is_none() {
+        self.poll_radio(player);
+        if !self.typing() && self.menu.is_none() {
             self.handle_keys(input, player);
         }
         if input.back_pressed {
@@ -473,6 +497,33 @@ impl Gui {
             self.search.focused = true;
         }
         FrameResult { animating, pointer }
+    }
+
+    /// A text field has the keyboard (global shortcuts are off).
+    fn typing(&self) -> bool {
+        self.search.focused || self.lf_key.focused || self.lf_secret.focused
+    }
+
+    /// Starts building a radio from `seed`; it replaces what's coming up when ready.
+    pub(crate) fn start_radio(&mut self, seed: Track) {
+        self.toast(format!("Finding songs like “{}”…", seed.title));
+        let pending = self.discovery.radio(&seed, 40);
+        self.radio = Some((seed, pending));
+    }
+
+    fn poll_radio(&mut self, player: &Player) {
+        let Some(result) = self.radio.as_ref().and_then(|r| r.1.poll()) else {
+            return;
+        };
+        let (seed, _) = self.radio.take().expect("checked");
+        let tracks = match result {
+            Ok(t) if !t.is_empty() => t,
+            Ok(_) => return self.toast("Couldn't find similar songs"),
+            Err(e) => return self.toast(format!("Radio: {e:#}")),
+        };
+        let n = tracks.len();
+        khoostic_discovery::queue_radio(&player.handle(), &seed, tracks);
+        self.toast(format!("Radio: {} like “{}”", count(n, "song"), seed.title));
     }
 
     fn handle_drops(&mut self, input: &Input, player: &Player) {
@@ -923,6 +974,46 @@ impl Gui {
                 player.send(Cmd::SetVolume(0.0));
             } else {
                 player.send(Cmd::SetVolume(self.unmute_to.max(0.05)));
+            }
+        }
+        // Autoplay toggle and "radio from this song".
+        let auto = self.discovery.autoplay();
+        let aid = anim::id("np-autoplay");
+        let ao = ui.anim.to(aid ^ 9, auto as u8 as f32, anim::NORMAL);
+        let (ax, ay) = (vol.x - 106.0, vol.y + vol.h / 2.0);
+        if ui.icon_button(
+            aid,
+            Icon::Autoplay,
+            (ax, ay),
+            18.0,
+            dim.lerp(accent, ao),
+            fg.lerp(accent, ao),
+        ) {
+            self.discovery.set_autoplay(!auto);
+            self.save_bool("playback.autoplay", !auto);
+            self.toast(if auto {
+                "Autoplay off"
+            } else {
+                "Autoplay on: similar songs keep playing when the queue ends"
+            });
+        }
+        if ao > 0.01 {
+            ui.c.circle(ax, ay + 15.0, 2.0 * ao, accent.alpha(ao));
+        }
+        let busy = self.radio.is_some();
+        let rc = if busy { accent } else { dim };
+        if ui.icon_button(
+            anim::id("np-radio"),
+            Icon::Radio,
+            (vol.x - 148.0, ay),
+            18.0,
+            rc,
+            fg,
+        ) && !busy
+        {
+            match &snap.current {
+                Some(e) => self.start_radio((*e.track).clone()),
+                None => self.toast("Play something first, or right-click a song 'Start radio'"),
             }
         }
         let on_queue = self.view == View::Queue;
