@@ -12,7 +12,9 @@ struct Globals {
 pub struct Painter {
     pipeline: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    /// Screen-size uniform, shared with the image pipeline.
+    pub bind_group: wgpu::BindGroup,
+    pub globals_layout: wgpu::BindGroupLayout,
     instances: wgpu::Buffer,
     capacity: usize,
     /// Instance ranges per layer for the current frame.
@@ -32,7 +34,7 @@ impl Painter {
             label: Some("quad globals"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -95,6 +97,7 @@ impl Painter {
             pipeline,
             globals,
             bind_group,
+            globals_layout: bgl,
             instances,
             capacity,
             ranges: Vec::new(),

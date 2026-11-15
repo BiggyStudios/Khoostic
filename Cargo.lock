@@ -1544,7 +1544,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "crossbeam-channel",
+ "fastrand",
  "glyphon",
+ "image",
  "khoostic-audio",
  "khoostic-config",
  "khoostic-core",

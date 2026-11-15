@@ -2,8 +2,11 @@
 //! measurement in logical pixels.
 
 use khoostic_config::GuiTheme;
+use khoostic_core::CoverRef;
+use khoostic_library::{CoverSize, Library};
 
 use crate::canvas::{Canvas, Color, Rect, Weight};
+use crate::images::ImageStore;
 use crate::text::TextSystem;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +44,8 @@ pub struct Input {
     pub released: bool,
     pub double_click: bool,
     pub right_pressed: bool,
+    /// Mouse "back" button (or similar) pressed.
+    pub back_pressed: bool,
     /// Wheel movement in logical pixels; positive scrolls content down.
     pub scroll: f32,
     pub keys: Vec<KeyPress>,
@@ -54,6 +59,7 @@ impl Input {
         self.released = false;
         self.double_click = false;
         self.right_pressed = false;
+        self.back_pressed = false;
         self.scroll = 0.0;
         self.keys.clear();
         self.dropped.clear();
@@ -116,6 +122,8 @@ impl Theme {
 pub struct Ui<'a> {
     pub c: &'a mut Canvas,
     pub text: &'a mut TextSystem,
+    pub images: &'a mut ImageStore,
+    pub library: &'a Library,
     pub input: &'a Input,
     pub theme: &'a Theme,
 }
@@ -215,5 +223,148 @@ impl Ui<'_> {
         };
         self.label_center(label, r, size, Weight::Medium, fg);
         (self.clicked(r), w)
+    }
+}
+
+impl Ui<'_> {
+    /// Cover art, or a generated placeholder while it loads / when there is none.
+    /// `seed` picks the placeholder's colors so different albums look different.
+    pub fn cover(
+        &mut self,
+        r: Rect,
+        cover: Option<&CoverRef>,
+        size: CoverSize,
+        radius: f32,
+        seed: &str,
+    ) {
+        if let Some(c @ CoverRef::Cached(key)) = cover {
+            let suffix = if size == CoverSize::Small { "s" } else { "l" };
+            let lib = self.library;
+            if let Some(id) = self
+                .images
+                .get(&format!("{key}-{suffix}"), || lib.cover_path(c, size))
+            {
+                self.c.image(r, id, radius, 1.0);
+                return;
+            }
+        }
+        let h = seed
+            .bytes()
+            .fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
+        let t = self.theme;
+        // A muted two-hue gradient unique to the seed, so cover-less albums are tellable apart.
+        let hue = (h % 360) as f32;
+        let top = hsv(hue, 0.38, 0.42);
+        let bottom = hsv(hue + 40.0 + (h >> 9) as f32 % 60.0, 0.45, 0.26);
+        self.c.gradient(r, top, bottom, radius);
+        // A small note glyph drawn with shapes, scaled to the tile.
+        let s = r.w.min(r.h) / 56.0;
+        let (cx, cy) = r.center();
+        let ink = t.fg.alpha(0.55);
+        self.c.circle(cx - 3.0 * s, cy + 6.0 * s, 5.0 * s, ink);
+        self.c.rect(
+            Rect::new(cx, cy - 10.0 * s, 2.5 * s, 16.0 * s),
+            ink,
+            1.0 * s,
+        );
+        self.c
+            .rect(Rect::new(cx, cy - 10.0 * s, 8.0 * s, 3.0 * s), ink, 1.5 * s);
+    }
+
+    /// A one-line text field. Returns true when its text changed this frame.
+    pub fn text_field(&mut self, field: &mut TextField, r: Rect, placeholder: &str) -> bool {
+        let t = self.theme;
+        if self.input.pressed {
+            field.focused = self.hovered(r);
+        }
+        let hover = self.hovered(r);
+        let bg = if field.focused {
+            t.surface_hover
+        } else if hover {
+            t.surface_hover.alpha(0.7)
+        } else {
+            t.background.alpha(0.6)
+        };
+        self.c.rect(r, bg, r.h / 2.0);
+        if field.focused {
+            self.c.outline(r, t.accent.alpha(0.6), r.h / 2.0, 1.0);
+        }
+        // Magnifier icon.
+        let ic = Rect::new(r.x + 12.0, r.y + r.h / 2.0 - 7.0, 14.0, 14.0);
+        self.c
+            .outline(Rect::new(ic.x, ic.y, 10.0, 10.0), t.dim, 5.0, 1.6);
+        self.c
+            .rect(Rect::new(ic.x + 9.0, ic.y + 9.5, 5.0, 2.0), t.dim, 1.0);
+
+        let mut changed = false;
+        if field.focused {
+            for k in &self.input.keys {
+                match k.key {
+                    Key::Char(c) if !k.ctrl => {
+                        field.text.push(c);
+                        changed = true;
+                    }
+                    Key::Space => {
+                        field.text.push(' ');
+                        changed = true;
+                    }
+                    Key::Backspace if k.ctrl => {
+                        let keep = field.text.trim_end().rfind(' ').map_or(0, |i| i + 1);
+                        field.text.truncate(keep);
+                        changed = true;
+                    }
+                    Key::Backspace => {
+                        changed |= field.text.pop().is_some();
+                    }
+                    Key::Escape | Key::Enter | Key::Down | Key::Tab => field.focused = false,
+                    _ => {}
+                }
+            }
+        }
+        let x = r.x + 34.0;
+        let w = r.w - 44.0;
+        let size = t.font_size - 1.0;
+        if field.text.is_empty() {
+            self.label(placeholder, x, r, w, size, Weight::Regular, t.dim);
+        } else {
+            self.label(&field.text, x, r, w, size, Weight::Regular, t.fg);
+        }
+        if field.focused {
+            let tw = self.measure(&field.text, size, Weight::Regular).min(w);
+            self.c.rect(
+                Rect::new(x + tw + 1.0, r.y + r.h / 2.0 - 8.0, 1.5, 16.0),
+                t.accent,
+                0.5,
+            );
+        }
+        changed
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TextField {
+    pub text: String,
+    pub focused: bool,
+}
+
+/// HSV → sRGB color (hue in degrees).
+fn hsv(h: f32, s: f32, v: f32) -> Color {
+    let h = h.rem_euclid(360.0) / 60.0;
+    let c = v * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    Color {
+        r: r + m,
+        g: g + m,
+        b: b + m,
+        a: 1.0,
     }
 }

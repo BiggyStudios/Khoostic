@@ -207,9 +207,20 @@ pub struct TextCmd {
     pub clip: Rect,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ImageCmd {
+    pub image: crate::images::ImageId,
+    /// Physical pixels.
+    pub rect: [f32; 4],
+    pub radius: f32,
+    pub opacity: f32,
+    pub clip: [f32; 4],
+}
+
 #[derive(Debug, Default)]
 pub struct Layer {
     pub quads: Vec<Quad>,
+    pub images: Vec<ImageCmd>,
     pub texts: Vec<TextCmd>,
 }
 
@@ -327,6 +338,22 @@ impl Canvas {
             Shape::TriangleLeft
         };
         self.shape(r, color, color, rounding, None, shape, 0.0);
+    }
+
+    /// Draws a GPU image (see [`crate::images::ImageStore`]) with rounded corners.
+    pub fn image(&mut self, r: Rect, image: crate::images::ImageId, radius: f32, opacity: f32) {
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        let s = self.scale;
+        let cmd = ImageCmd {
+            image,
+            rect: [r.x * s, r.y * s, r.w * s, r.h * s],
+            radius: radius * s,
+            opacity,
+            clip: self.clip_px(),
+        };
+        self.layers[self.layer].images.push(cmd);
     }
 
     /// Queues text with its top-left at `(x, y)` (logical). Measuring/alignment is done by the

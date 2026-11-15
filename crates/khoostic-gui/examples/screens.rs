@@ -1,4 +1,5 @@
-//! Renders the real GUI offscreen with scripted input and saves PNGs (volume 0).
+//! Renders the real GUI offscreen with scripted input and saves PNGs (volume 0). Uses a
+//! throwaway library index in the temp directory.
 //!
 //! cargo run -p khoostic-gui --example screens -- <music folder> <out dir>
 
@@ -21,13 +22,25 @@ fn save(path: &str, size: (u32, u32), px: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn key(k: Key) -> Input {
+fn keys(ks: &[Key]) -> Input {
     Input {
-        keys: vec![KeyPress {
-            key: k,
-            shift: false,
-            ctrl: false,
-        }],
+        keys: ks
+            .iter()
+            .map(|&key| KeyPress {
+                key,
+                shift: false,
+                ctrl: false,
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+fn click(x: f32, y: f32, double: bool) -> Input {
+    Input {
+        mouse: Some((x, y)),
+        pressed: true,
+        double_click: double,
         ..Default::default()
     }
 }
@@ -38,6 +51,11 @@ fn main() -> anyhow::Result<()> {
     let out = args.next().expect("output dir");
     let mut config = Config::default();
     config.library.music_dirs = vec![music.clone().into()];
+    let tmp = std::env::temp_dir().join("khoostic-example-lib");
+    let library = Library::open(&tmp.join("lib.db"), &tmp.join("covers"))?;
+    let stats = library.scan_blocking(&[music.clone().into()])?;
+    println!("scan: {stats:?}");
+
     let player = Player::start(
         EngineConfig {
             volume: 0.0,
@@ -45,64 +63,37 @@ fn main() -> anyhow::Result<()> {
         },
         Resolvers::with_defaults(),
     )?;
-    let tmp = std::env::temp_dir().join("khoostic-example-lib");
-    let library = Library::open(&tmp.join("lib.db"), &tmp.join("covers"))?;
-    library.scan_blocking(&[music.clone().into()])?;
-    let mut h = Headless::new(&config, library.clone(), (1280, 780), 1.0)?;
-
-    let tracks = library.tracks_for_paths(&[&music]);
-    player.send(PlayerCommand::Enqueue(
-        tracks.into_iter().take(14).collect(),
-    ));
-    player.send(PlayerCommand::Next);
-    player.send(PlayerCommand::SetVolume(0.0));
-    std::thread::sleep(Duration::from_millis(1000));
-    player.send(PlayerCommand::Seek(Duration::from_secs(60)));
-    std::thread::sleep(Duration::from_millis(1500));
-
-    // Hover the 4th row, then a few frames so smoothing settles.
-    let hover = Input {
-        mouse: Some((600.0, 28.0 + 76.0 + 3.0 * 42.0 + 20.0)),
-        ..Default::default()
+    let mut h = Headless::new(&config, library.clone(), (1280, 800), 1.0)?;
+    let shot = |h: &mut Headless, name: &str, input: &Input| -> anyhow::Result<()> {
+        let px = h.frame(input, &player)?;
+        save(&format!("{out}/{name}.png"), h.size, &px)
     };
-    for _ in 0..5 {
-        h.frame(&hover, &player)?;
-        std::thread::sleep(Duration::from_millis(30));
-    }
-    save(
-        &format!("{out}/gui-queue.png"),
-        h.size,
-        &h.frame(&hover, &player)?,
+
+    shot(&mut h, "lib-albums", &Input::default())?;
+    // Open the first album (top-left tile), then double-click its first track.
+    h.frame(&click(330.0, 190.0, false), &player)?;
+    h.frame(&click(600.0, 252.0 + 20.0, false), &player)?;
+    h.frame(&click(600.0, 252.0 + 20.0, true), &player)?;
+    std::thread::sleep(Duration::from_millis(1200));
+    player.send(PlayerCommand::Seek(Duration::from_secs(40)));
+    std::thread::sleep(Duration::from_millis(600));
+    shot(
+        &mut h,
+        "lib-album",
+        &Input {
+            mouse: Some((600.0, 500.0)),
+            ..Default::default()
+        },
     )?;
 
-    h.frame(&key(Key::Char('2')), &player)?;
-    h.frame(&key(Key::Down), &player)?;
-    h.frame(&key(Key::Down), &player)?;
-    save(
-        &format!("{out}/gui-browse.png"),
-        h.size,
-        &h.frame(&Input::default(), &player)?,
+    shot(&mut h, "lib-artists", &keys(&[Key::Char('2')]))?;
+    shot(&mut h, "lib-songs", &keys(&[Key::Char('3')]))?;
+    h.frame(&keys(&[Key::Char('/')]), &player)?;
+    shot(
+        &mut h,
+        "lib-search",
+        &keys(&[Key::Char('b'), Key::Char('a')]),
     )?;
-
-    h.frame(&key(Key::Char('3')), &player)?;
-    for _ in 0..20 {
-        h.frame(&Input::default(), &player)?;
-        std::thread::sleep(Duration::from_millis(16));
-    }
-    save(
-        &format!("{out}/gui-visualizer.png"),
-        h.size,
-        &h.frame(&Input::default(), &player)?,
-    )?;
-
-    // Empty queue state, at 1.5x UI scale to check DPI handling.
-    player.send(PlayerCommand::Clear);
-    std::thread::sleep(Duration::from_millis(200));
-    let mut h2 = Headless::new(&config, library.clone(), (1280, 780), 1.5)?;
-    save(
-        &format!("{out}/gui-empty-1.5x.png"),
-        h2.size,
-        &h2.frame(&Input::default(), &player)?,
-    )?;
+    shot(&mut h, "lib-queue", &keys(&[Key::Escape, Key::Char('4')]))?;
     Ok(())
 }

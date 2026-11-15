@@ -29,6 +29,12 @@ pub enum PlayerCommand {
     Enqueue(Vec<Track>),
     /// Append and start playing the first of them right away.
     EnqueueAndPlay(Vec<Track>),
+    /// Replace the queue with `tracks` and play from `start` (clicking a song in an album,
+    /// playlist or search result).
+    PlayTracks {
+        tracks: Vec<Track>,
+        start: usize,
+    },
     /// Insert after the current track, in order.
     PlayNext(Vec<Track>),
     /// Insert at a position in the visible queue order (paste).
@@ -215,6 +221,21 @@ impl Controller {
                 if let Some(id) = first {
                     self.queue.write().jump_to(id);
                     self.load_current();
+                }
+            }
+            PlayTracks { tracks, start } => {
+                let target = {
+                    let mut q = self.queue.write();
+                    q.clear();
+                    let ids = q.extend(tracks);
+                    ids.get(start).or(ids.first()).copied()
+                };
+                match target {
+                    Some(id) => {
+                        self.queue.write().jump_to(id);
+                        self.load_current();
+                    }
+                    None => self.stop(),
                 }
             }
             PlayNext(tracks) => {

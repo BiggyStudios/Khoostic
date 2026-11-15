@@ -17,6 +17,9 @@ wgpu.workspace = true
 glyphon.workspace = true
 bytemuck.workspace = true
 pollster.workspace = true
+crossbeam-channel.workspace = true
+image.workspace = true
+fastrand.workspace = true
 
 [dev-dependencies]
 png.workspace = true

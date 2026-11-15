@@ -6,10 +6,12 @@
 pub mod app;
 pub mod canvas;
 pub mod gpu;
+pub mod images;
 pub mod painter;
 pub mod renderer;
 pub mod text;
 pub mod ui;
+pub mod views;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -116,7 +118,10 @@ impl WinitApp {
         let mut canvas = Canvas::new(size, scale, self.gui.theme.background);
         let result = self.gui.frame(
             &mut canvas,
-            &mut ws.renderer.text,
+            app::Gfx {
+                text: &mut ws.renderer.text,
+                images: &mut ws.renderer.images,
+            },
             &self.input,
             &self.player,
         );
@@ -292,6 +297,7 @@ impl ApplicationHandler for WinitApp {
                     self.input.down = false;
                 }
                 (MouseButton::Right, ElementState::Pressed) => self.input.right_pressed = true,
+                (MouseButton::Back, ElementState::Pressed) => self.input.back_pressed = true,
                 _ => {}
             },
             WindowEvent::MouseWheel { delta, .. } => {
@@ -354,10 +360,24 @@ impl Headless {
     }
 
     /// Runs one UI frame with `input` and returns RGBA8 pixels.
+    /// Runs one UI frame with `input` and returns RGBA8 pixels. Keeps rendering (without new
+    /// input) until cover art has finished loading, so captures are complete.
     pub fn frame(&mut self, input: &Input, player: &Player) -> anyhow::Result<Vec<u8>> {
-        let mut canvas = Canvas::new(self.size, self.scale, self.gui.theme.background);
-        self.gui
-            .frame(&mut canvas, &mut self.renderer.text, input, player);
-        self.renderer.capture(&canvas, self.size)
+        let mut input = input.clone();
+        for _ in 0..200 {
+            let mut canvas = Canvas::new(self.size, self.scale, self.gui.theme.background);
+            let gfx = app::Gfx {
+                text: &mut self.renderer.text,
+                images: &mut self.renderer.images,
+            };
+            self.gui.frame(&mut canvas, gfx, &input, player);
+            let pixels = self.renderer.capture(&canvas, self.size)?;
+            if !self.renderer.images.is_loading() {
+                return Ok(pixels);
+            }
+            input.end_frame();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        anyhow::bail!("images never finished loading")
     }
 }

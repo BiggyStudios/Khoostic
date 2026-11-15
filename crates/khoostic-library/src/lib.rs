@@ -50,6 +50,9 @@ impl Library {
     }
 
     pub fn open(db_path: &Path, cover_dir: &Path) -> anyhow::Result<Arc<Self>> {
+        if let Some(dir) = db_path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
         let conn = db::open(db_path).with_context(|| format!("opening {}", db_path.display()))?;
         Ok(Arc::new(Self {
             conn: Mutex::new(conn),

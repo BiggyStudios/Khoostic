@@ -4,6 +4,7 @@ use anyhow::Context;
 
 use crate::canvas::Canvas;
 use crate::gpu::Gpu;
+use crate::images::ImageStore;
 use crate::painter::Painter;
 use crate::text::TextSystem;
 
@@ -12,17 +13,20 @@ pub struct Renderer {
     pub format: wgpu::TextureFormat,
     painter: Painter,
     pub text: TextSystem,
+    pub images: ImageStore,
 }
 
 impl Renderer {
     pub fn new(gpu: Gpu, format: wgpu::TextureFormat, font: Option<String>) -> Self {
         let painter = Painter::new(&gpu.device, format);
         let text = TextSystem::new(&gpu.device, &gpu.queue, format, font);
+        let images = ImageStore::new(&gpu.device, &gpu.queue, format, &painter.globals_layout);
         Self {
             gpu,
             format,
             painter,
             text,
+            images,
         }
     }
 
@@ -40,6 +44,9 @@ impl Renderer {
             canvas.layers.iter().map(|l| l.quads.as_slice()),
         );
         self.text.prepare(device, queue, size, &canvas.layers)?;
+        let image_layers: Vec<&[crate::canvas::ImageCmd]> =
+            canvas.layers.iter().map(|l| l.images.as_slice()).collect();
+        self.images.prepare(&image_layers);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("frame"),
@@ -69,6 +76,7 @@ impl Renderer {
             });
             for layer in 0..canvas.layers.len() {
                 self.painter.draw(&mut pass, layer);
+                self.images.draw(&mut pass, layer, &self.painter.bind_group);
                 self.text.render(&mut pass, layer)?;
             }
         }
