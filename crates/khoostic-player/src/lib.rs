@@ -5,6 +5,7 @@
 //! frontend interchangeable and makes remote control (MPD, listen-along) a thin layer.
 
 pub mod resolve;
+pub mod scan;
 
 use std::sync::Arc;
 use std::thread;
@@ -26,9 +27,22 @@ const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 #[derive(Debug, Clone)]
 pub enum PlayerCommand {
     Enqueue(Vec<Track>),
-    PlayNext(Track),
+    /// Append and start playing the first of them right away.
+    EnqueueAndPlay(Vec<Track>),
+    /// Insert after the current track, in order.
+    PlayNext(Vec<Track>),
+    /// Insert at a position in the visible queue order (paste).
+    Insert {
+        index: usize,
+        tracks: Vec<Track>,
+    },
+    /// Move an entry in the visible queue order.
+    Move {
+        from: usize,
+        to: usize,
+    },
     PlayEntry(EntryId),
-    Remove(EntryId),
+    Remove(Vec<EntryId>),
     Clear,
     Next,
     Prev,
@@ -194,8 +208,23 @@ impl Controller {
                 self.queue.write().extend(tracks);
                 self.refresh_preload();
             }
-            PlayNext(track) => {
-                self.queue.write().push_next(track);
+            EnqueueAndPlay(tracks) => {
+                let first = self.queue.write().extend(tracks).first().copied();
+                if let Some(id) = first {
+                    self.queue.write().jump_to(id);
+                    self.load_current();
+                }
+            }
+            PlayNext(tracks) => {
+                self.queue.write().push_next_many(tracks);
+                self.refresh_preload();
+            }
+            Insert { index, tracks } => {
+                self.queue.write().insert_at(index, tracks);
+                self.refresh_preload();
+            }
+            Move { from, to } => {
+                self.queue.write().move_entry(from, to);
                 self.refresh_preload();
             }
             PlayEntry(id) => {
@@ -203,10 +232,20 @@ impl Controller {
                     self.load_current();
                 }
             }
-            Remove(id) => {
-                let was_current = self.queue.write().remove(id);
-                if was_current {
-                    self.load_current();
+            Remove(ids) => {
+                let mut removed_current = false;
+                {
+                    let mut q = self.queue.write();
+                    for id in ids {
+                        removed_current |= q.remove(id);
+                    }
+                }
+                if removed_current && self.active {
+                    // Keep the user's play/pause state across the jump.
+                    let paused = self.engine.status().state == PlaybackState::Paused;
+                    self.load_current_with(paused);
+                } else if removed_current {
+                    self.stop();
                 } else {
                     self.refresh_preload();
                 }
@@ -342,6 +381,10 @@ impl Controller {
 
     /// Starts the queue's current entry, skipping entries that fail to open.
     fn load_current(&mut self) {
+        self.load_current_with(false);
+    }
+
+    fn load_current_with(&mut self, paused: bool) {
         let attempts = self.queue.read().len();
         for _ in 0..attempts.max(1) {
             let Some(entry) = self.queue.read().current().cloned() else {
@@ -352,7 +395,7 @@ impl Controller {
                 Ok(source) => {
                     self.preloaded = None;
                     self.active = true;
-                    self.engine.load(entry.id.0, source, false);
+                    self.engine.load(entry.id.0, source, paused);
                     return;
                 }
                 Err(e) => {

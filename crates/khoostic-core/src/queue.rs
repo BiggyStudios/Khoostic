@@ -141,6 +141,59 @@ impl Queue {
         id
     }
 
+    /// Inserts several tracks after the current one, keeping their relative order.
+    pub fn push_next_many<I, T>(&mut self, tracks: I) -> Vec<EntryId>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Arc<Track>>,
+    {
+        let at = self.current_index().map_or(self.entries.len(), |i| i + 1);
+        let slot = self.cursor.map_or(self.order.len(), |c| c + 1);
+        let mut ids = Vec::new();
+        for (i, t) in tracks.into_iter().enumerate() {
+            let entry = self.make_entry(t.into());
+            ids.push(entry.id);
+            self.entries.insert(at + i, entry);
+            self.order.insert(slot + i, ids[i]);
+        }
+        self.bump();
+        ids
+    }
+
+    /// Inserts tracks at a position in the user-visible order (paste). When not shuffling, the
+    /// play order follows; when shuffling, they're scattered among the upcoming tracks.
+    pub fn insert_at<I, T>(&mut self, index: usize, tracks: I) -> Vec<EntryId>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Arc<Track>>,
+    {
+        let index = index.min(self.entries.len());
+        let new: Vec<QueueEntry> = tracks
+            .into_iter()
+            .map(|t| self.make_entry(t.into()))
+            .collect();
+        let ids: Vec<EntryId> = new.iter().map(|e| e.id).collect();
+        self.entries.splice(index..index, new);
+        if self.shuffle {
+            for &id in &ids {
+                let lo = self.cursor.map_or(0, |c| c + 1);
+                self.order
+                    .insert(fastrand::usize(lo..=self.order.len()), id);
+            }
+        } else {
+            let current = self.current_id();
+            self.order = self.entries.iter().map(|e| e.id).collect();
+            self.cursor = current.and_then(|id| self.order.iter().position(|&o| o == id));
+        }
+        self.bump();
+        ids
+    }
+
+    /// Index of an entry in user-visible order.
+    pub fn index_of(&self, id: EntryId) -> Option<usize> {
+        self.entries.iter().position(|e| e.id == id)
+    }
+
     /// Removes an entry. Returns `true` if it was the current entry; in that case the cursor
     /// moves to whatever followed it (or is cleared at the end of the queue).
     pub fn remove(&mut self, id: EntryId) -> bool {
@@ -335,6 +388,30 @@ mod tests {
         let n = q.push_next(Track::from_path("next.flac"));
         assert_eq!(q.peek_next().unwrap().id, n);
         assert_eq!(q.entries()[1].id, n);
+    }
+
+    #[test]
+    fn push_next_many_keeps_order() {
+        let (mut q, ids) = q(3);
+        q.jump_to(ids[0]);
+        let new = q.push_next_many([Track::from_path("a"), Track::from_path("b")]);
+        let visible: Vec<_> = q.entries().iter().map(|e| e.id).collect();
+        assert_eq!(visible, vec![ids[0], new[0], new[1], ids[1], ids[2]]);
+        assert_eq!(q.advance().unwrap().id, new[0]);
+        assert_eq!(q.advance().unwrap().id, new[1]);
+    }
+
+    #[test]
+    fn insert_at_rebuilds_play_order() {
+        let (mut q, ids) = q(3);
+        q.jump_to(ids[1]);
+        let new = q.insert_at(1, [Track::from_path("pasted")]);
+        assert_eq!(q.entries()[1].id, new[0]);
+        // Current entry unchanged; pasted entry is *before* it so it doesn't play next.
+        assert_eq!(q.current_id(), Some(ids[1]));
+        assert_eq!(q.peek_next().unwrap().id, ids[2]);
+        let end = q.insert_at(99, [Track::from_path("end")]);
+        assert_eq!(q.entries().last().unwrap().id, end[0]);
     }
 
     #[test]

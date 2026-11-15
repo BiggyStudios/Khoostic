@@ -14,3 +14,4 @@ tracing.workspace = true
 ratatui.workspace = true
 fastrand.workspace = true
 unicode-width.workspace = true
+directories.workspace = true

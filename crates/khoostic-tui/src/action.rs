@@ -86,11 +86,32 @@ impl Action {
         use Action::*;
         matches!(
             self,
-            MoveDown | MoveUp | Top | Bottom | HalfPageDown | HalfPageUp | PageDown | PageUp
-                | Delete | Yank | PasteAfter | PasteBefore | MoveItemDown | MoveItemUp
-                | NextTrack | PrevTrack | SeekForward | SeekBackward | SeekForwardBig
-                | SeekBackwardBig | VolumeUp | VolumeDown | SearchNext | SearchPrev
-                | Append | InsertNext
+            MoveDown
+                | MoveUp
+                | Top
+                | Bottom
+                | HalfPageDown
+                | HalfPageUp
+                | PageDown
+                | PageUp
+                | Delete
+                | Yank
+                | PasteAfter
+                | PasteBefore
+                | MoveItemDown
+                | MoveItemUp
+                | NextTrack
+                | PrevTrack
+                | SeekForward
+                | SeekBackward
+                | SeekForwardBig
+                | SeekBackwardBig
+                | VolumeUp
+                | VolumeDown
+                | SearchNext
+                | SearchPrev
+                | Append
+                | InsertNext
         )
     }
 }

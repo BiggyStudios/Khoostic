@@ -241,34 +241,81 @@ pub struct Keymap {
 const DEFAULT_NORMAL: &[(&str, Action)] = {
     use Action::*;
     &[
-        ("j", MoveDown), ("<Down>", MoveDown), ("k", MoveUp), ("<Up>", MoveUp),
-        ("gg", Top), ("<Home>", Top), ("G", Bottom), ("<End>", Bottom),
-        ("<C-d>", HalfPageDown), ("<C-u>", HalfPageUp),
-        ("<C-f>", PageDown), ("<PageDown>", PageDown), ("<C-b>", PageUp), ("<PageUp>", PageUp),
+        ("j", MoveDown),
+        ("<Down>", MoveDown),
+        ("k", MoveUp),
+        ("<Up>", MoveUp),
+        ("gg", Top),
+        ("<Home>", Top),
+        ("G", Bottom),
+        ("<End>", Bottom),
+        ("<C-d>", HalfPageDown),
+        ("<C-u>", HalfPageUp),
+        ("<C-f>", PageDown),
+        ("<PageDown>", PageDown),
+        ("<C-b>", PageUp),
+        ("<PageUp>", PageUp),
         ("o", GotoPlaying),
-        ("<CR>", Activate), ("h", Parent), ("<BS>", Parent), ("l", Open),
-        ("a", Append), ("A", InsertNext),
-        ("dd", Delete), ("x", Delete), ("<Del>", Delete),
-        ("yy", Yank), ("p", PasteAfter), ("P", PasteBefore),
-        ("J", MoveItemDown), ("K", MoveItemUp),
-        ("V", VisualMode), ("v", VisualMode), ("<Esc>", Escape),
-        ("<Space>", TogglePause), ("S", Stop),
-        (">", NextTrack), ("<lt>", PrevTrack),
-        ("f", SeekForward), ("<Right>", SeekForward), ("b", SeekBackward), ("<Left>", SeekBackward),
-        ("F", SeekForwardBig), ("B", SeekBackwardBig), ("0", SeekStart),
-        ("+", VolumeUp), ("=", VolumeUp), ("-", VolumeDown),
-        ("s", ToggleShuffle), ("r", CycleRepeat),
-        (":", CommandMode), ("/", Search), ("n", SearchNext), ("N", SearchPrev),
-        ("<Tab>", NextView), ("<S-Tab>", PrevView),
-        ("gq", ViewQueue), ("gb", ViewBrowse), ("gv", ViewVisualizer),
-        ("<F1>", ViewQueue), ("<F2>", ViewBrowse), ("<F3>", ViewVisualizer),
-        ("c", CycleVisualizer), ("?", Help), ("q", Quit),
+        ("<CR>", Activate),
+        ("h", Parent),
+        ("<BS>", Parent),
+        ("l", Open),
+        ("a", Append),
+        ("A", InsertNext),
+        ("dd", Delete),
+        ("x", Delete),
+        ("<Del>", Delete),
+        ("yy", Yank),
+        ("p", PasteAfter),
+        ("P", PasteBefore),
+        ("J", MoveItemDown),
+        ("K", MoveItemUp),
+        ("V", VisualMode),
+        ("v", VisualMode),
+        ("<Esc>", Escape),
+        ("<Space>", TogglePause),
+        ("S", Stop),
+        (">", NextTrack),
+        ("<lt>", PrevTrack),
+        ("f", SeekForward),
+        ("<Right>", SeekForward),
+        ("b", SeekBackward),
+        ("<Left>", SeekBackward),
+        ("F", SeekForwardBig),
+        ("B", SeekBackwardBig),
+        ("0", SeekStart),
+        ("+", VolumeUp),
+        ("=", VolumeUp),
+        ("-", VolumeDown),
+        ("s", ToggleShuffle),
+        ("r", CycleRepeat),
+        (":", CommandMode),
+        ("/", Search),
+        ("n", SearchNext),
+        ("N", SearchPrev),
+        ("<Tab>", NextView),
+        ("<S-Tab>", PrevView),
+        ("gq", ViewQueue),
+        ("gb", ViewBrowse),
+        ("gv", ViewVisualizer),
+        ("<F1>", ViewQueue),
+        ("<F2>", ViewBrowse),
+        ("<F3>", ViewVisualizer),
+        ("c", CycleVisualizer),
+        ("?", Help),
+        ("q", Quit),
     ]
 };
 
 const DEFAULT_VISUAL: &[(&str, Action)] = {
     use Action::*;
-    &[("d", Delete), ("x", Delete), ("y", Yank), ("V", VisualMode), ("v", VisualMode)]
+    &[
+        ("d", Delete),
+        ("x", Delete),
+        ("y", Yank),
+        ("V", VisualMode),
+        ("v", VisualMode),
+    ]
 };
 
 impl Default for Keymap {
@@ -280,10 +327,12 @@ impl Default for Keymap {
             pending: Vec::new(),
         };
         for &(keys, action) in DEFAULT_NORMAL {
-            km.normal.bind(parse_keys(keys).expect("valid default"), Some(action));
+            km.normal
+                .bind(parse_keys(keys).expect("valid default"), Some(action));
         }
         for &(keys, action) in DEFAULT_VISUAL {
-            km.visual.bind(parse_keys(keys).expect("valid default"), Some(action));
+            km.visual
+                .bind(parse_keys(keys).expect("valid default"), Some(action));
         }
         km
     }
@@ -316,7 +365,9 @@ impl Keymap {
         let chords = parse_keys(keys)?;
         let action = match action {
             "none" | "nop" | "<nop>" => None,
-            name => Some(Action::from_name(name).ok_or_else(|| format!("unknown action {name:?}"))?),
+            name => {
+                Some(Action::from_name(name).ok_or_else(|| format!("unknown action {name:?}"))?)
+            }
         };
         self.table_mut(mode).bind(chords, action);
         Ok(())
@@ -335,7 +386,11 @@ impl Keymap {
             KeyMode::Normal => &self.normal,
             KeyMode::Visual => &self.visual,
         };
-        let mut v: Vec<_> = table.exact.iter().map(|(k, &a)| (format_keys(k), a)).collect();
+        let mut v: Vec<_> = table
+            .exact
+            .iter()
+            .map(|(k, &a)| (format_keys(k), a))
+            .collect();
         v.sort_by_key(|(k, a)| (Action::ALL.iter().position(|x| x == a), k.len(), k.clone()));
         v
     }
@@ -420,7 +475,11 @@ mod tests {
     use super::*;
 
     fn feed_str(km: &mut Keymap, mode: KeyMode, s: &str) -> Vec<Outcome> {
-        parse_keys(s).unwrap().into_iter().map(|c| km.feed(mode, c)).collect()
+        parse_keys(s)
+            .unwrap()
+            .into_iter()
+            .map(|c| km.feed(mode, c))
+            .collect()
     }
 
     fn last(km: &mut Keymap, mode: KeyMode, s: &str) -> Outcome {
@@ -455,16 +514,58 @@ mod tests {
     fn sequences_and_counts() {
         let mut km = Keymap::default();
         let n = KeyMode::Normal;
-        assert_eq!(last(&mut km, n, "j"), Outcome::Action { action: Action::MoveDown, count: None });
+        assert_eq!(
+            last(&mut km, n, "j"),
+            Outcome::Action {
+                action: Action::MoveDown,
+                count: None
+            }
+        );
         assert_eq!(feed_str(&mut km, n, "gg")[0], Outcome::Pending);
-        assert_eq!(last(&mut km, n, "gg"), Outcome::Action { action: Action::Top, count: None });
-        assert_eq!(last(&mut km, n, "12j"), Outcome::Action { action: Action::MoveDown, count: Some(12) });
+        assert_eq!(
+            last(&mut km, n, "gg"),
+            Outcome::Action {
+                action: Action::Top,
+                count: None
+            }
+        );
+        assert_eq!(
+            last(&mut km, n, "12j"),
+            Outcome::Action {
+                action: Action::MoveDown,
+                count: Some(12)
+            }
+        );
         assert_eq!(km.pending_display(), "");
-        assert_eq!(last(&mut km, n, "3dd"), Outcome::Action { action: Action::Delete, count: Some(3) });
+        assert_eq!(
+            last(&mut km, n, "3dd"),
+            Outcome::Action {
+                action: Action::Delete,
+                count: Some(3)
+            }
+        );
         // `0` alone is bound (restart track), but inside a count it's a digit.
-        assert_eq!(last(&mut km, n, "0"), Outcome::Action { action: Action::SeekStart, count: None });
-        assert_eq!(last(&mut km, n, "10G"), Outcome::Action { action: Action::Bottom, count: Some(10) });
-        assert_eq!(last(&mut km, n, "<lt>"), Outcome::Action { action: Action::PrevTrack, count: None });
+        assert_eq!(
+            last(&mut km, n, "0"),
+            Outcome::Action {
+                action: Action::SeekStart,
+                count: None
+            }
+        );
+        assert_eq!(
+            last(&mut km, n, "10G"),
+            Outcome::Action {
+                action: Action::Bottom,
+                count: Some(10)
+            }
+        );
+        assert_eq!(
+            last(&mut km, n, "<lt>"),
+            Outcome::Action {
+                action: Action::PrevTrack,
+                count: None
+            }
+        );
     }
 
     #[test]
@@ -473,7 +574,13 @@ mod tests {
         let n = KeyMode::Normal;
         assert_eq!(last(&mut km, n, "4gz"), Outcome::Unbound);
         assert!(!km.is_pending());
-        assert_eq!(last(&mut km, n, "j"), Outcome::Action { action: Action::MoveDown, count: None });
+        assert_eq!(
+            last(&mut km, n, "j"),
+            Outcome::Action {
+                action: Action::MoveDown,
+                count: None
+            }
+        );
     }
 
     #[test]
@@ -487,36 +594,71 @@ mod tests {
     fn visual_overrides_then_falls_back() {
         let mut km = Keymap::default();
         let v = KeyMode::Visual;
-        assert_eq!(last(&mut km, v, "d"), Outcome::Action { action: Action::Delete, count: None });
-        assert_eq!(last(&mut km, v, "j"), Outcome::Action { action: Action::MoveDown, count: None });
-        assert_eq!(last(&mut km, v, "gg"), Outcome::Action { action: Action::Top, count: None });
+        assert_eq!(
+            last(&mut km, v, "d"),
+            Outcome::Action {
+                action: Action::Delete,
+                count: None
+            }
+        );
+        assert_eq!(
+            last(&mut km, v, "j"),
+            Outcome::Action {
+                action: Action::MoveDown,
+                count: None
+            }
+        );
+        assert_eq!(
+            last(&mut km, v, "gg"),
+            Outcome::Action {
+                action: Action::Top,
+                count: None
+            }
+        );
     }
 
     #[test]
     fn overrides_and_ambiguity_timeout() {
-        let overrides: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> =
-            [(
-                "normal".to_string(),
-                [
-                    ("g".to_string(), "goto_playing".to_string()),
-                    ("q".to_string(), "none".to_string()),
-                    ("<C-q>".to_string(), "quit".to_string()),
-                    ("zz".to_string(), "bogus".to_string()),
-                ]
-                .into(),
-            )]
-            .into();
+        let overrides: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, String>,
+        > = [(
+            "normal".to_string(),
+            [
+                ("g".to_string(), "goto_playing".to_string()),
+                ("q".to_string(), "none".to_string()),
+                ("<C-q>".to_string(), "quit".to_string()),
+                ("zz".to_string(), "bogus".to_string()),
+            ]
+            .into(),
+        )]
+        .into();
         let (mut km, problems) = Keymap::default().with_overrides(&overrides);
         assert_eq!(problems.len(), 1);
         let n = KeyMode::Normal;
         assert_eq!(last(&mut km, n, "q"), Outcome::Unbound);
-        assert_eq!(last(&mut km, n, "<C-q>"), Outcome::Action { action: Action::Quit, count: None });
+        assert_eq!(
+            last(&mut km, n, "<C-q>"),
+            Outcome::Action {
+                action: Action::Quit,
+                count: None
+            }
+        );
         // `g` is both bound and a prefix of `gg`: waits, then fires on timeout.
         assert_eq!(last(&mut km, n, "g"), Outcome::Pending);
         assert_eq!(
             km.timeout(n),
-            Some(Outcome::Action { action: Action::GotoPlaying, count: None })
+            Some(Outcome::Action {
+                action: Action::GotoPlaying,
+                count: None
+            })
         );
-        assert_eq!(last(&mut km, n, "gg"), Outcome::Action { action: Action::Top, count: None });
+        assert_eq!(
+            last(&mut km, n, "gg"),
+            Outcome::Action {
+                action: Action::Top,
+                count: None
+            }
+        );
     }
 }

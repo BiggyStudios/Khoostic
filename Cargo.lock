@@ -973,6 +973,7 @@ dependencies = [
  "khoostic-core",
  "parking_lot 0.13.0",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]
@@ -980,6 +981,7 @@ name = "khoostic-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "directories",
  "fastrand",
  "khoostic-audio",
  "khoostic-config",

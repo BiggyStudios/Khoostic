@@ -32,7 +32,11 @@ pub struct AudioConfig {
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        Self { device: String::new(), volume: 80, buffer_ms: 1000 }
+        Self {
+            device: String::new(),
+            volume: 80,
+            buffer_ms: 1000,
+        }
     }
 }
 
@@ -70,7 +74,13 @@ pub struct TuiConfig {
 
 impl Default for TuiConfig {
     fn default() -> Self {
-        Self { fps: 60, seek_step: 5, volume_step: 5, theme: Theme::default(), keys: BTreeMap::new() }
+        Self {
+            fps: 60,
+            seek_step: 5,
+            volume_step: 5,
+            theme: Theme::default(),
+            keys: BTreeMap::new(),
+        }
     }
 }
 
@@ -101,7 +111,12 @@ impl Default for Theme {
             selection_bg: "#89dceb".into(),
             playing: "#a6e3a1".into(),
             error: "#f38ba8".into(),
-            spectrum: vec!["#89dceb".into(), "#89b4fa".into(), "#cba6f7".into(), "#f5c2e7".into()],
+            spectrum: vec![
+                "#89dceb".into(),
+                "#89b4fa".into(),
+                "#cba6f7".into(),
+                "#f5c2e7".into(),
+            ],
         }
     }
 }
