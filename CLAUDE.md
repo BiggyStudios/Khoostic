@@ -24,7 +24,7 @@ only uses the ones listed above it here (keep it that way; no cycles back up).
 | `discovery.rs` | Song radio (Spotify radio + Last.fm similar, matched to local files first, library-only fallback) and the autoplay watcher |
 | `lyrics.rs` | Lyrics providers in configured order: local `.lrc` / tags, Spotify (also for matched local songs), LRCLIB |
 | `services.rs` | `Services::start`: library, Spotify, Last.fm, player and discovery wired together; `Launch` (paths from the command line) |
-| `gui/` | `window.rs` event loop + frame pacing + the borderless window (resize edges, drag), `headless.rs` offscreen; `app.rs` state + frame layout (title bar with window buttons, Your Library panel, page, queue panel, player bar: `top_bar.rs`, `sidebar.rs`, `queue_panel.rs`, `player_bar.rs`), `menu.rs` (song and library menus), `spotify.rs` (online data: Spotify, lyrics, genres), `state.rs` (panel state saved to `gui-state.json`); `views/` one file per page (+ `lists.rs` track rows, `grid.rs` cover tiles, `page.rs` whole-page scrolling, cards, two-line song rows); `ui/` widgets, `anim.rs`, `icons.rs`, `text_field.rs`; `render/` canvas, SDF painter (boxes, triangles, lines, arcs), images, glyphon text, wgpu (Vulkan only) |
+| `gui/` | `window.rs` event loop + frame pacing + the borderless window (resize edges, drag), `headless.rs` offscreen; `app.rs` state + frame layout (title bar with window buttons, Your Library panel, page, queue panel, player bar: `top_bar.rs`, `sidebar.rs`, `queue_panel.rs`, `player_bar.rs`), `menu.rs` (song and library menus), `spotify.rs` (online data: Spotify, lyrics, genres), `state.rs` (panel state saved to `gui-state.json`); `views/` one file per page (+ `lists.rs` track rows, `grid.rs` cover tiles, `page.rs` whole-page scrolling, cards, two-line song rows); `ui/` widgets, `anim.rs`, `icons.rs`, `text_field.rs`, `themes.rs` (built-in themes: Khoostic, Pink, Catppuccin); `render/` canvas, SDF painter (boxes, triangles, lines, arcs), images, glyphon text, `wipe.rs` (the theme-change swipe over a snapshot of the old frame), wgpu (Vulkan only) |
 | `tui/` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
 | `main.rs` | CLI: `khoostic [paths] [--tui] [--play] [--shuffle]`, `devices`, `config`, `spotify`/`lastfm` `login/logout/status` |
 
@@ -76,6 +76,8 @@ cargo run --example library_scan -- <music dir> <scratch dir>
   timers; anything still moving keeps frames coming. The event loop paces frames to `gui.fps`
   (`background_fps` unfocused) and draws nothing while minimized. Fills that should look subtle
   use `Theme::wash` (blending is in linear light, so raw low alphas look far too bright).
+  Colors come from the `Theme`, never hard-coded (themes are switchable); colors derived from
+  content (artist or album hues) go through `Theme::tint`.
   Within a layer, images draw above shapes: put shapes that must cover art on layer 1.
 - Several dependencies are newer than most training data: symphonia 0.6, cpal 0.18, rubato 5,
   wgpu 30, glyphon 0.12 / cosmic-text 0.19, ratatui 0.30, rusqlite 0.43, lofty 0.25, winit 0.30.

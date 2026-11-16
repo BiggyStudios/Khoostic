@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::gui::app::Gui;
 use crate::gui::render::{Rect, Weight};
-use crate::gui::ui::{Ui, anim, hsv};
+use crate::gui::ui::{Ui, anim};
 use crate::gui::views::empty_state;
 use crate::gui::views::page::wrap;
 use crate::gui::views::search::spin_angle;
@@ -49,7 +49,7 @@ impl Gui {
             .chain(track.artist_line().bytes())
             .fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619))
             % 360;
-        let tint = hsv(hue as f32, 0.5, 0.45);
+        let tint = ui.theme.tint(hue as f32, 0.5, 0.45);
         ui.c.gradient(
             Rect::new(r.x - 32.0, r.y - 28.0, r.w + 64.0, r.h + 28.0),
             tint.alpha(0.4),

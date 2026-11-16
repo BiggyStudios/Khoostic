@@ -180,6 +180,17 @@ fn main() -> anyhow::Result<()> {
     h.frame(&keys(&[Key::Escape]), &player)?;
     shot(&mut h, "sp-playlists", &click(100.0, 258.0, false))?;
     shot(&mut h, "settings", &click(1116.0, 32.0, false))?;
+    // Theme cards under Appearance: catch each swipe partway across, then settled.
+    let mid = |h: &mut Headless, name: &str, input: &Input, ms: u64| -> anyhow::Result<()> {
+        let px = h.frame_at(input, &player, Duration::from_millis(ms))?;
+        save(&format!("{out}/{name}.png"), h.size, &px)
+    };
+    mid(&mut h, "theme-swipe", &click(610.0, 260.0, false), 380)?;
+    shot(&mut h, "theme-pink", &Input::default())?;
+    mid(&mut h, "theme-swipe-2", &click(792.0, 260.0, false), 520)?;
+    shot(&mut h, "theme-catppuccin", &Input::default())?;
+    shot(&mut h, "lyrics-catppuccin", &keys(&[Key::Char('L')]))?;
+    h.frame(&keys(&[Key::Char('L')]), &player)?;
     shot(
         &mut h,
         "settings-lyrics",

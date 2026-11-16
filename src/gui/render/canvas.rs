@@ -244,6 +244,10 @@ pub struct Canvas {
     pub size: (f32, f32),
     pub clear: Color,
     pub layers: [Layer; LAYERS],
+    /// Keep a copy of this frame for a swipe that starts next frame.
+    pub snapshot: bool,
+    /// Swipe the kept frame away over this one.
+    pub wipe: Option<crate::gui::render::wipe::WipeFrame>,
     layer: usize,
     clip: Vec<Rect>,
     fx: Vec<Fx>,
@@ -257,6 +261,8 @@ impl Canvas {
             size,
             clear,
             layers: Default::default(),
+            snapshot: false,
+            wipe: None,
             layer: 0,
             clip: vec![Rect::new(0.0, 0.0, size.0, size.1)],
             fx: vec![Fx {

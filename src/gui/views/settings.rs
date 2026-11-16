@@ -3,8 +3,10 @@
 
 use crate::config::Config;
 use crate::gui::app::{Gui, count};
+use crate::gui::render::Color;
 use crate::gui::render::{Rect, Weight};
 use crate::gui::ui::icons::Icon;
+use crate::gui::ui::themes::{self, Preset};
 use crate::gui::ui::{Ui, anim};
 use crate::lyrics::Provider;
 use crate::player::{Player, PlayerSnapshot};
@@ -71,6 +73,21 @@ impl Gui {
                 t.dim,
             );
         };
+
+        section(ui, &mut y, "APPEARANCE");
+        let gap = 14.0;
+        let card_w = ((body.w - 2.0 * gap) / 3.0).min(168.0);
+        let mut picked = None;
+        for (i, p) in themes::PRESETS.iter().enumerate() {
+            let r = Rect::new(lx + i as f32 * (card_w + gap), y, card_w, 104.0);
+            if theme_card(ui, r, p, self.theme.key == p.key) {
+                picked = Some(p.key);
+            }
+        }
+        if let Some(key) = picked {
+            self.set_theme(key);
+        }
+        y += 132.0;
 
         section(ui, &mut y, "DISPLAY");
         row_text(
@@ -480,4 +497,94 @@ fn nearest(options: &[u32], v: u32) -> usize {
         .enumerate()
         .min_by_key(|(_, o)| o.abs_diff(v))
         .map_or(0, |(i, _)| i)
+}
+
+/// A small picture of a theme (its page, panel, accent and visualizer colors) with its name.
+/// True when clicked.
+fn theme_card(ui: &mut Ui, r: Rect, p: &Preset, selected: bool) -> bool {
+    let t = ui.theme.clone();
+    let c = |hex: &str| Color::hex(hex).unwrap_or(t.fg);
+    let id = anim::id(("theme-card", p.key));
+    let hover = ui.hover_t(id, r);
+    let sel = ui.anim.to(id ^ 1, selected as u8 as f32, anim::NORMAL);
+    ui.pointer |= ui.hovered(r);
+    let lift = 2.0 * hover;
+    let r = Rect::new(r.x, r.y - lift, r.w, r.h);
+    ui.c.glow(
+        r,
+        Color::BLACK.alpha(0.25 + 0.2 * hover),
+        10.0,
+        8.0 + 6.0 * hover,
+    );
+
+    // The theme's own colors: window, a page panel with a header wash, a few rows, a play
+    // button and visualizer bars.
+    let art = Rect::new(r.x, r.y, r.w, r.h - 30.0);
+    ui.c.rect(art, c(p.background), 10.0);
+    let panel = Rect::new(art.x + 28.0, art.y + 8.0, art.w - 36.0, art.h - 16.0);
+    ui.c.rect(panel, c(p.surface), 6.0);
+    ui.c.gradient(
+        Rect::new(panel.x, panel.y, panel.w, panel.h * 0.6),
+        c(p.accent).alpha(0.16),
+        c(p.accent).alpha(0.0),
+        6.0,
+    );
+    for k in 0..3 {
+        let ry = art.y + 12.0 + k as f32 * 9.0;
+        ui.c.rect(
+            Rect::new(art.x + 8.0, ry, 14.0, 4.0),
+            c(p.dim).alpha(0.7),
+            2.0,
+        );
+    }
+    ui.c.rect(
+        Rect::new(panel.x + 8.0, panel.y + 8.0, panel.w * 0.45, 6.0),
+        c(p.fg),
+        3.0,
+    );
+    ui.c.rect(
+        Rect::new(panel.x + 8.0, panel.y + 19.0, panel.w * 0.3, 4.0),
+        c(p.dim),
+        2.0,
+    );
+    ui.c.circle(panel.x + 15.0, panel.bottom() - 13.0, 7.0, c(p.accent));
+    let bars = 9;
+    let bx = panel.x + 30.0;
+    let bw = ((panel.right() - 8.0 - bx) / bars as f32 - 2.0).max(1.0);
+    for k in 0..bars {
+        let f = k as f32 / (bars - 1) as f32;
+        let h = 6.0 + 12.0 * (0.5 + 0.5 * (k as f32 * 1.7).sin()).powf(1.5);
+        let n = p.spectrum.len().max(1) - 1;
+        let col = c(p.spectrum[((f * n as f32).round() as usize).min(n)]);
+        ui.c.rect(
+            Rect::new(bx + k as f32 * (bw + 2.0), panel.bottom() - 6.0 - h, bw, h),
+            col,
+            bw / 2.0,
+        );
+    }
+
+    // Name below, and the selection ring in the current accent.
+    ui.label(
+        p.name,
+        r.x + 2.0,
+        Rect::new(r.x + 2.0, art.bottom() + 6.0, r.w - 30.0, 20.0),
+        r.w - 30.0,
+        t.font_size,
+        Weight::Medium,
+        if selected {
+            t.fg
+        } else {
+            t.dim.lerp(t.fg, hover)
+        },
+    );
+    if sel > 0.01 {
+        ui.c.outline(art.inset(-3.0, -3.0), t.accent.alpha(sel), 13.0, 2.0);
+        crate::gui::ui::icons::draw(
+            ui.c,
+            Icon::Check,
+            Rect::new(r.right() - 20.0, art.bottom() + 8.0, 16.0, 16.0),
+            t.accent.alpha(sel),
+        );
+    }
+    ui.clicked(r)
 }

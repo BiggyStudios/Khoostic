@@ -248,37 +248,43 @@ impl Default for GuiConfig {
     }
 }
 
-/// GUI colors, `"#rrggbb"` or `"#rrggbbaa"`.
+/// GUI theme: a built-in one by `name` ("khoostic", "pink", "catppuccin"), with any colors
+/// set here (`"#rrggbb"` or `"#rrggbbaa"`) overriding it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct GuiTheme {
-    pub background: String,
-    pub surface: String,
-    pub surface_hover: String,
-    pub fg: String,
-    pub dim: String,
-    pub accent: String,
-    pub playing: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface_hover: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playing: Option<String>,
     /// Visualizer gradient, low to high.
-    pub spectrum: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spectrum: Option<Vec<String>>,
 }
 
 impl Default for GuiTheme {
     fn default() -> Self {
         Self {
-            background: "#08080b".into(),
-            surface: "#101014".into(),
-            surface_hover: "#1b1b21".into(),
-            fg: "#ececf1".into(),
-            dim: "#86868f".into(),
-            accent: "#8ad7e8".into(),
-            playing: "#a6e3a1".into(),
-            spectrum: vec![
-                "#89dceb".into(),
-                "#89b4fa".into(),
-                "#cba6f7".into(),
-                "#f5c2e7".into(),
-            ],
+            name: "khoostic".into(),
+            background: None,
+            surface: None,
+            surface_hover: None,
+            fg: None,
+            dim: None,
+            accent: None,
+            playing: None,
+            spectrum: None,
         }
     }
 }
@@ -379,6 +385,20 @@ font_size = 15 # big
         let order: toml_edit::Array = ["lrclib", "local"].into_iter().collect();
         let c = Config::parse(&set_value("", "lyrics.providers", order.into()).unwrap()).unwrap();
         assert_eq!(c.lyrics.providers, ["lrclib", "local"]);
+    }
+
+    #[test]
+    fn theme_name_saves_next_to_other_gui_settings() {
+        let text = "[gui]\nfps = 120\n";
+        let out = set_value(text, "gui.theme.name", "pink".into()).unwrap();
+        let c = Config::parse(&out).unwrap();
+        assert_eq!(c.gui.theme.name, "pink");
+        assert_eq!(c.gui.fps, 120);
+        assert_eq!(c.gui.theme.accent, None);
+        // Overrides still load next to a name.
+        let c =
+            Config::parse("[gui.theme]\nname = \"catppuccin\"\naccent = \"#ff0000\"\n").unwrap();
+        assert_eq!(c.gui.theme.accent.as_deref(), Some("#ff0000"));
     }
 
     #[test]

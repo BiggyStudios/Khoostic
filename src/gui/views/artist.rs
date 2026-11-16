@@ -8,7 +8,7 @@ use crate::audio::AnalysisFrame;
 use crate::gui::app::{Gui, PAD, View};
 use crate::gui::render::{Color, Rect, Weight};
 use crate::gui::ui::icons::{self, Icon};
-use crate::gui::ui::{Ui, anim, hsv};
+use crate::gui::ui::{Ui, anim};
 use crate::gui::views::page::{Card, SONG_H, SongAction, chips, section_title, wrap};
 use crate::gui::views::search::spin_angle;
 use crate::library::CoverSize;
@@ -39,7 +39,7 @@ impl Gui {
             .bytes()
             .fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619))
             % 360;
-        let tint = hsv(hue as f32, 0.45, 0.42);
+        let tint = ui.theme.tint(hue as f32, 0.45, 0.42);
         // Edge to edge across the page panel (`r` is inset by PAD), scrolling with the page.
         let scroll = self.list("artist-page").scroll;
         ui.c.gradient(

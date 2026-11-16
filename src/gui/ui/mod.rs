@@ -4,6 +4,7 @@
 pub mod anim;
 pub mod icons;
 pub mod text_field;
+pub mod themes;
 
 use std::sync::Arc;
 
@@ -83,6 +84,8 @@ impl Input {
 
 #[derive(Debug, Clone)]
 pub struct Theme {
+    /// The built-in theme this started from (its config key).
+    pub key: &'static str,
     /// Window background (sidebar and player bar sit directly on it).
     pub background: Color,
     /// The content panel.
@@ -94,29 +97,58 @@ pub struct Theme {
     pub accent: Color,
     pub playing: Color,
     pub spectrum: Vec<Color>,
+    /// How colorful art-derived washes may be (0 = grayscale) and how far they lean toward
+    /// the accent; see [`Theme::tint`].
+    pub saturation: f32,
+    pub pull: f32,
     pub radius: f32,
     pub font_size: f32,
 }
 
 impl Theme {
     pub fn from_config(t: &GuiTheme, radius: f32, font_size: f32) -> (Self, Vec<String>) {
-        let d = GuiTheme::default();
         let mut problems = Vec::new();
-        let mut p = |v: &str, fallback: &str| {
-            Color::hex(v).unwrap_or_else(|| {
-                problems.push(format!("gui theme: can't parse color {v:?}"));
-                Color::hex(fallback).expect("default parses")
-            })
+        let preset = themes::preset(&t.name).unwrap_or_else(|| {
+            problems.push(format!(
+                "gui theme: no theme called {:?} (there's {})",
+                t.name,
+                themes::PRESETS
+                    .iter()
+                    .map(|p| p.key)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            &themes::PRESETS[0]
+        });
+        let mut p = |v: &Option<String>, fallback: &str| {
+            let fallback = Color::hex(fallback).expect("presets parse");
+            match v {
+                None => fallback,
+                Some(v) => Color::hex(v).unwrap_or_else(|| {
+                    problems.push(format!("gui theme: can't parse color {v:?}"));
+                    fallback
+                }),
+            }
         };
         let mut theme = Self {
-            background: p(&t.background, &d.background),
-            surface: p(&t.surface, &d.surface),
-            surface_hover: p(&t.surface_hover, &d.surface_hover),
-            fg: p(&t.fg, &d.fg),
-            dim: p(&t.dim, &d.dim),
-            accent: p(&t.accent, &d.accent),
-            playing: p(&t.playing, &d.playing),
-            spectrum: t.spectrum.iter().filter_map(|c| Color::hex(c)).collect(),
+            key: preset.key,
+            background: p(&t.background, preset.background),
+            surface: p(&t.surface, preset.surface),
+            surface_hover: p(&t.surface_hover, preset.surface_hover),
+            fg: p(&t.fg, preset.fg),
+            dim: p(&t.dim, preset.dim),
+            accent: p(&t.accent, preset.accent),
+            playing: p(&t.playing, preset.playing),
+            spectrum: match &t.spectrum {
+                Some(s) => s.iter().filter_map(|c| Color::hex(c)).collect(),
+                None => preset
+                    .spectrum
+                    .iter()
+                    .filter_map(|c| Color::hex(c))
+                    .collect(),
+            },
+            saturation: preset.saturation,
+            pull: preset.pull,
             radius: radius.max(0.0),
             font_size: font_size.clamp(8.0, 40.0),
         };
@@ -124,6 +156,24 @@ impl Theme {
             theme.spectrum = vec![theme.accent];
         }
         (theme, problems)
+    }
+
+    /// A color picked from content (an artist, an album) made to fit the theme: no more
+    /// colorful than it allows, leaning toward its accent.
+    pub fn tint(&self, hue: f32, s: f32, v: f32) -> Color {
+        let c = hsv(hue, s * self.saturation, v);
+        if self.pull <= 0.0 {
+            return c;
+        }
+        let a = self.accent;
+        let m = a.r.max(a.g).max(a.b).max(1e-3);
+        let toward = Color {
+            r: a.r / m * v,
+            g: a.g / m * v,
+            b: a.b / m * v,
+            a: 1.0,
+        };
+        c.lerp(toward, self.pull)
     }
 
     pub fn gradient(&self, t: f32) -> Color {
@@ -462,8 +512,8 @@ impl Ui<'_> {
         let t = self.theme;
         // A muted two-hue gradient unique to the seed, so cover-less albums are tellable apart.
         let hue = (h % 360) as f32;
-        let top = hsv(hue, 0.30, 0.30);
-        let bottom = hsv(hue + 40.0 + (h >> 9) as f32 % 60.0, 0.36, 0.18);
+        let top = t.tint(hue, 0.30, 0.30);
+        let bottom = t.tint(hue + 40.0 + (h >> 9) as f32 % 60.0, 0.36, 0.18);
         self.c.gradient(r, top, bottom, radius);
         let s = r.w.min(r.h) * 0.34;
         let (cx, cy) = r.center();

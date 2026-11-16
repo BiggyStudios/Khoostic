@@ -7,6 +7,7 @@ pub mod gpu;
 pub mod images;
 pub mod painter;
 pub mod text;
+pub mod wipe;
 
 use anyhow::Context;
 
@@ -25,6 +26,7 @@ pub struct Renderer {
     painter: Painter,
     pub text: TextSystem,
     pub images: ImageStore,
+    wipe: wipe::Wipe,
 }
 
 impl Renderer {
@@ -32,12 +34,14 @@ impl Renderer {
         let painter = Painter::new(&gpu.device, format);
         let text = TextSystem::new(&gpu.device, &gpu.queue, format, font);
         let images = ImageStore::new(&gpu.device, &gpu.queue, format, &painter.globals_layout);
+        let wipe = wipe::Wipe::new(&gpu.device, format);
         Self {
             gpu,
             format,
             painter,
             text,
             images,
+            wipe,
         }
     }
 
@@ -58,41 +62,43 @@ impl Renderer {
         let image_layers: Vec<&[crate::gui::render::ImageCmd]> =
             canvas.layers.iter().map(|l| l.images.as_slice()).collect();
         self.images.prepare(&image_layers);
+        let wipe = match canvas.wipe {
+            Some(w) => self.wipe.prepare(queue, size, canvas.scale, w),
+            None => {
+                if !canvas.snapshot && self.wipe.has_snapshot() {
+                    self.wipe.release();
+                }
+                false
+            }
+        };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("frame"),
         });
+        if canvas.snapshot {
+            // The same frame again into the swipe's copy (the next frames wipe it away).
+            let view = self.wipe.snapshot_target(&self.gpu.device, size).clone();
+            let mut pass = begin(&mut encoder, &view, canvas.clear);
+            self.draw_layers(&mut pass, canvas)?;
+        }
         {
-            let [r, g, b, a] = canvas.clear.linear();
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ui"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: r as f64,
-                            g: g as f64,
-                            b: b as f64,
-                            a: a as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            for layer in 0..canvas.layers.len() {
-                self.painter.draw(&mut pass, layer);
-                self.images.draw(&mut pass, layer, &self.painter.bind_group);
-                self.text.render(&mut pass, layer)?;
+            let mut pass = begin(&mut encoder, target, canvas.clear);
+            self.draw_layers(&mut pass, canvas)?;
+            if wipe {
+                self.wipe.draw(&mut pass);
             }
         }
-        queue.submit(Some(encoder.finish()));
+        self.gpu.queue.submit(Some(encoder.finish()));
         self.text.end_frame();
+        Ok(())
+    }
+
+    fn draw_layers(&self, pass: &mut wgpu::RenderPass<'_>, canvas: &Canvas) -> anyhow::Result<()> {
+        for layer in 0..canvas.layers.len() {
+            self.painter.draw(pass, layer);
+            self.images.draw(pass, layer, &self.painter.bind_group);
+            self.text.render(pass, layer)?;
+        }
         Ok(())
     }
 
@@ -167,4 +173,33 @@ impl Renderer {
         }
         Ok(out)
     }
+}
+
+fn begin<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    clear: crate::gui::render::Color,
+) -> wgpu::RenderPass<'e> {
+    let [r, g, b, a] = clear.linear();
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("ui"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: r as f64,
+                    g: g as f64,
+                    b: b as f64,
+                    a: a as f64,
+                }),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    })
 }

@@ -49,12 +49,7 @@ impl Headless {
         // After loading finishes, keep going long enough for fades and transitions to settle.
         let mut settle = 40;
         for _ in 0..400 {
-            let mut canvas = Canvas::new(self.size, self.scale, self.gui.theme.background);
-            let gfx = app::Gfx {
-                text: &mut self.renderer.text,
-                images: &mut self.renderer.images,
-            };
-            self.gui.frame(&mut canvas, gfx, &input, player);
+            let canvas = self.step(&input, player)?;
             if !self.renderer.images.is_loading() {
                 settle -= 1;
                 if settle == 0 {
@@ -66,5 +61,41 @@ impl Headless {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         anyhow::bail!("images never finished loading")
+    }
+
+    /// Runs `input` for one frame, then idles for `after` (wall time, so time-based motion such
+    /// as a theme swipe moves on), and captures whatever is on screen then.
+    pub fn frame_at(
+        &mut self,
+        input: &Input,
+        player: &Player,
+        after: std::time::Duration,
+    ) -> anyhow::Result<Vec<u8>> {
+        let mut input = input.clone();
+        let start = std::time::Instant::now();
+        loop {
+            let canvas = self.step(&input, player)?;
+            if start.elapsed() >= after {
+                return self.renderer.capture(&canvas, self.size);
+            }
+            self.renderer.text.end_frame();
+            input.end_frame();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// One GUI frame; frames the renderer must see (the copy a theme swipe starts from) are
+    /// drawn offscreen right away.
+    fn step(&mut self, input: &Input, player: &Player) -> anyhow::Result<Canvas> {
+        let mut canvas = Canvas::new(self.size, self.scale, self.gui.theme.background);
+        let gfx = app::Gfx {
+            text: &mut self.renderer.text,
+            images: &mut self.renderer.images,
+        };
+        self.gui.frame(&mut canvas, gfx, input, player);
+        if canvas.snapshot {
+            self.renderer.capture(&canvas, self.size)?;
+        }
+        Ok(canvas)
     }
 }

@@ -218,6 +218,12 @@ pub struct Gui {
     /// Draw the spectrum ring around the player bar's cover.
     pub(crate) cover_visualizer: bool,
     pub(crate) ring: crate::gui::player_bar::CoverRing,
+    /// Theme colors from the config, kept so a theme picked in Settings keeps the overrides.
+    pub(crate) theme_config: crate::config::GuiTheme,
+    /// A theme picked this frame; it takes over next frame, swiping in over a copy of this one.
+    pub(crate) next_theme: Option<Theme>,
+    /// When the current theme swipe started.
+    pub(crate) swipe: Option<Instant>,
     pub(crate) config_path: Option<PathBuf>,
     /// Measured frames per second while animating.
     pub(crate) measured_fps: f32,
@@ -320,6 +326,9 @@ impl Gui {
             background_fps: g.background_fps.clamp(1, 360),
             cover_visualizer: g.cover_visualizer,
             ring: Default::default(),
+            theme_config: g.theme.clone(),
+            next_theme: None,
+            swipe: None,
             config_path: config.source.clone(),
             measured_fps: 0.0,
             kb_nav: false,
@@ -421,6 +430,11 @@ impl Gui {
             let inst = 1.0 / dt;
             self.measured_fps += (inst - self.measured_fps) * 0.1;
         }
+        if let Some(theme) = self.next_theme.take() {
+            self.theme = theme;
+            self.swipe = Some(now);
+        }
+        canvas.clear = self.theme.background;
         let images_changed = gfx.images.poll();
         self.refresh_library();
         self.poll_spotify(player);
@@ -560,11 +574,13 @@ impl Gui {
         }
         let pointer = ui.pointer;
         let copy = ui.copy.take();
+        let swiping = self.swipe_frame(ui.c);
         let animating = snap.state == PlaybackState::Playing
             || ui.anim.moving()
             || scrolling
             || images_changed
             || ui.images.is_loading()
+            || swiping
             || self.drag.is_some()
             || self.toast.is_some()
             || self.library.is_scanning()
@@ -790,5 +806,52 @@ impl Gui {
         ui.c.rect(tip, t.surface_hover, 6.0);
         ui.label_center(&text, tip, 13.0, Weight::Medium, t.fg);
         ui.c.set_layer(0);
+    }
+}
+
+/// How long a theme swipe takes to cross the window.
+const SWIPE: Duration = Duration::from_millis(850);
+
+impl Gui {
+    /// Switches to the built-in theme `key` (keeping colors overridden in the config) with a
+    /// swipe, and saves the choice.
+    pub(crate) fn set_theme(&mut self, key: &str) {
+        if self.theme.key == key && self.next_theme.is_none() {
+            return;
+        }
+        let mut cfg = self.theme_config.clone();
+        cfg.name = key.to_owned();
+        let (theme, _) = Theme::from_config(&cfg, self.theme.radius, self.theme.font_size);
+        self.theme_config = cfg;
+        self.next_theme = Some(theme);
+        self.save_str("gui.theme.name", key);
+    }
+
+    /// Asks the renderer for this frame's part of a theme swipe; true while one is running.
+    fn swipe_frame(&mut self, canvas: &mut Canvas) -> bool {
+        if self.next_theme.is_some() {
+            // Keep this (old-theme) frame to swipe away over the next ones.
+            canvas.snapshot = true;
+            return true;
+        }
+        let Some(start) = self.swipe else {
+            return false;
+        };
+        let t = start.elapsed().as_secs_f32() / SWIPE.as_secs_f32();
+        if t >= 1.0 {
+            self.swipe = None;
+            return false;
+        }
+        // Slow out of the corner, fast across the middle, settling at the far side.
+        let p = if t < 0.5 {
+            4.0 * t * t * t
+        } else {
+            1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+        };
+        canvas.wipe = Some(crate::gui::render::wipe::WipeFrame {
+            progress: p,
+            glow: self.theme.accent,
+        });
+        true
     }
 }
