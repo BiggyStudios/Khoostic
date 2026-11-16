@@ -32,11 +32,17 @@ pub enum SourceError {
     /// Briefly out of reach (network trouble, a throttled service); worth retrying soon.
     #[error("temporarily unavailable: {0}")]
     Unavailable(String),
+    /// The source asked us to wait this long before trying again (Spotify pacing its keys).
+    #[error("{message}")]
+    RetryLater {
+        after: std::time::Duration,
+        message: String,
+    },
 }
 
 impl SourceError {
     pub fn is_temporary(&self) -> bool {
-        matches!(self, Self::Unavailable(_))
+        matches!(self, Self::Unavailable(_) | Self::RetryLater { .. })
     }
 }
 

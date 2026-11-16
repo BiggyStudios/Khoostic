@@ -81,7 +81,10 @@ fn main() -> anyhow::Result<()> {
     println!("invite: {invite}");
     let t = Instant::now();
     guest_jam.join(&format!("127.0.0.1:{port}/{secret}"))?;
-    let joined = wait(&|| guest.snapshot().state == State::Playing, 10);
+    let joined = wait(
+        &|| (guest.snapshot().state == State::Playing && !guest.snapshot().loading),
+        10,
+    );
     check(
         "guest joins and plays",
         title(&guest.snapshot()) == title(&host.snapshot()),
@@ -129,7 +132,7 @@ fn main() -> anyhow::Result<()> {
     let took2 = wait(
         &|| {
             title(&guest.snapshot()) == title(&host.snapshot())
-                && guest.snapshot().state == State::Playing
+                && (guest.snapshot().state == State::Playing && !guest.snapshot().loading)
         },
         5,
     );
@@ -166,7 +169,10 @@ fn main() -> anyhow::Result<()> {
         ),
     );
     guest.send(Cmd::TogglePause);
-    wait(&|| host.snapshot().state == State::Playing, 3);
+    wait(
+        &|| (host.snapshot().state == State::Playing && !host.snapshot().loading),
+        3,
+    );
     std::thread::sleep(Duration::from_secs(4));
     let (worst, mean, n) = drift(3);
     check(

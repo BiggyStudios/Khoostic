@@ -87,6 +87,8 @@ struct Inner {
     http: reqwest::Client,
     status: Mutex<Status>,
     session: tokio::sync::Mutex<Option<Session>>,
+    /// Decryption keys: remembered, and paced the way Spotify wants.
+    keys: source::KeyGate,
     tokens: tokio::sync::Mutex<Option<Tokens>>,
     cancel: Mutex<Option<oneshot::Sender<()>>>,
     /// Bumped on every status change so UIs can refresh cheaply.
@@ -124,6 +126,7 @@ impl Spotify {
                 http: reqwest::Client::builder().user_agent("khoostic").build()?,
                 status: Mutex::new(Status::Disconnected),
                 session: Default::default(),
+                keys: Default::default(),
                 tokens: Default::default(),
                 cancel: Mutex::new(None),
                 version: AtomicU64::new(0),
@@ -482,6 +485,10 @@ impl SourceResolver for SpotifyResolver {
         matches!(locator, TrackLocator::Spotify { .. })
     }
 
+    fn network(&self) -> bool {
+        true
+    }
+
     fn open(&self, track: &Track) -> Result<Box<dyn AudioSource>, SourceError> {
         let TrackLocator::Spotify { id } = &track.locator else {
             return Err(SourceError::Unsupported("not a Spotify track".into()));
@@ -506,13 +513,18 @@ impl SourceResolver for SpotifyResolver {
         // Network work on the runtime; the decoder probe (which reads the stream) on this thread.
         let fetched = s.rt.block_on(async move {
             let session = inner.session().await?;
-            let parts = source::fetch(&session, &id, bitrate).await?;
+            let parts = source::fetch(&session, &inner.keys, &id, bitrate).await?;
             anyhow::Ok((session, parts))
         });
         // Anything but a track that can't be played (throttled key requests, network trouble,
         // a dropped session) is worth another try in a moment.
         let (session, (file, len, duration)) = fetched.map_err(|e| {
-            if e.downcast_ref::<source::NotPlayable>().is_some() {
+            if let Some(source::Refused(after)) = e.downcast_ref::<source::Refused>() {
+                SourceError::RetryLater {
+                    after: *after,
+                    message: e.to_string(),
+                }
+            } else if e.downcast_ref::<source::NotPlayable>().is_some() {
                 SourceError::Unsupported(format!("{e:#}"))
             } else {
                 SourceError::Unavailable(format!("{e:#}"))

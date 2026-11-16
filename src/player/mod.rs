@@ -10,7 +10,7 @@ pub mod resolve;
 
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, select};
 use parking_lot::RwLock;
@@ -139,6 +139,8 @@ pub struct PlayerSnapshot {
     pub device: String,
     /// `current` is still being opened (fetched, for streams); the engine is behind it.
     pub loading: bool,
+    /// While loading: the source asked to wait this much longer (Spotify pacing its keys).
+    pub waiting: Option<Duration>,
 }
 
 pub struct Player {
@@ -147,7 +149,8 @@ pub struct Player {
     events: Receiver<PlayerEvent>,
     engine: Arc<EngineHandle>,
     queue: Arc<RwLock<Queue>>,
-    loading: Arc<RwLock<Option<EntryId>>>,
+    loading: Arc<RwLock<Option<(EntryId, bool)>>>,
+    held: Arc<RwLock<Option<Instant>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -158,7 +161,8 @@ impl Player {
         let (tx, rx) = crossbeam_channel::unbounded();
         let (stop, stop_rx) = crossbeam_channel::bounded(1);
         let (ev_tx, events) = crossbeam_channel::unbounded();
-        let (jobs, opened) = open::spawn(resolvers)?;
+        let held = Arc::new(RwLock::new(None));
+        let (jobs, opened) = open::spawn(resolvers, held.clone())?;
         let loading = Arc::new(RwLock::new(None));
 
         let mut ctl = Controller {
@@ -189,6 +193,7 @@ impl Player {
             engine,
             queue,
             loading,
+            held,
             thread: Some(thread),
         })
     }
@@ -211,7 +216,7 @@ impl Player {
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
-        snapshot(&self.engine, &self.queue, &self.loading)
+        snapshot(&self.engine, &self.queue, &self.loading, &self.held)
     }
 
     /// A cheap, cloneable handle for background services (scrobbling, autoplay) that need
@@ -222,6 +227,7 @@ impl Player {
             engine: self.engine.clone(),
             queue: self.queue.clone(),
             loading: self.loading.clone(),
+            held: self.held.clone(),
         }
     }
 }
@@ -232,7 +238,8 @@ pub struct PlayerHandle {
     link: Arc<Link>,
     engine: Arc<EngineHandle>,
     queue: Arc<RwLock<Queue>>,
-    loading: Arc<RwLock<Option<EntryId>>>,
+    loading: Arc<RwLock<Option<(EntryId, bool)>>>,
+    held: Arc<RwLock<Option<Instant>>>,
 }
 
 impl PlayerHandle {
@@ -256,7 +263,7 @@ impl PlayerHandle {
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
-        snapshot(&self.engine, &self.queue, &self.loading)
+        snapshot(&self.engine, &self.queue, &self.loading, &self.held)
     }
 
     pub fn queue(&self) -> &RwLock<Queue> {
@@ -267,15 +274,24 @@ impl PlayerHandle {
 fn snapshot(
     engine: &EngineHandle,
     queue: &RwLock<Queue>,
-    loading: &RwLock<Option<EntryId>>,
+    loading: &RwLock<Option<(EntryId, bool)>>,
+    held: &RwLock<Option<Instant>>,
 ) -> PlayerSnapshot {
     {
         let st = engine.status();
         let q = queue.read();
         // A song being opened shows right away, at its start.
-        if let Some(e) = loading.read().and_then(|id| q.get(id).cloned()) {
+        if let Some((e, paused)) = loading
+            .read()
+            .and_then(|(id, p)| Some((q.get(id).cloned()?, p)))
+        {
             return PlayerSnapshot {
-                state: st.state,
+                // What it will do once it's open.
+                state: if paused {
+                    PlaybackState::Paused
+                } else {
+                    PlaybackState::Playing
+                },
                 position: Duration::ZERO,
                 duration: e.track.duration,
                 current: Some(e),
@@ -286,6 +302,9 @@ fn snapshot(
                 sample_rate: st.sample_rate,
                 device: st.device.clone(),
                 loading: true,
+                waiting: held
+                    .read()
+                    .map(|until| until.saturating_duration_since(Instant::now())),
             };
         }
         // Prefer what the engine says is audible; the queue cursor can briefly lead it.
@@ -305,6 +324,7 @@ fn snapshot(
             sample_rate: st.sample_rate,
             device: st.device.clone(),
             loading: false,
+            waiting: None,
         }
     }
 }
@@ -336,7 +356,7 @@ struct Controller {
     ticket: u64,
     loading: Option<Loading>,
     /// Shared with snapshots, so frontends show the entry being opened right away.
-    shown_loading: Arc<RwLock<Option<EntryId>>>,
+    shown_loading: Arc<RwLock<Option<(EntryId, bool)>>>,
     /// The gapless follow-up being opened.
     preloading: Option<(u64, EntryId)>,
     /// Entry currently handed to the engine as the gapless follow-up.
@@ -376,6 +396,12 @@ impl Controller {
     }
 
     fn command(&mut self, cmd: PlayerCommand) {
+        self.command_inner(cmd);
+        // Pause/play while a song opens changes what snapshots should say.
+        self.set_loading(self.loading);
+    }
+
+    fn command_inner(&mut self, cmd: PlayerCommand) {
         use PlayerCommand::*;
         // Whatever the user does next gets the full benefit of the doubt again.
         self.failures = 0;
@@ -465,9 +491,9 @@ impl Controller {
                 }
             }
             Play => {
+                // While a song opens only the intent changes (the old song stays quiet).
                 if let Some(l) = &mut self.loading {
                     l.paused = false;
-                    self.engine.send(Command::Play);
                 } else if self.engine.status().state == PlaybackState::Stopped {
                     let has = {
                         let mut q = self.queue.write();
@@ -489,14 +515,8 @@ impl Controller {
             TogglePause => {
                 if let Some(l) = &mut self.loading {
                     l.paused = !l.paused;
-                    let cmd = if l.paused {
-                        Command::Pause
-                    } else {
-                        Command::Play
-                    };
-                    self.engine.send(cmd);
                 } else if self.engine.status().state == PlaybackState::Stopped {
-                    self.command(Play);
+                    self.command_inner(Play);
                 } else {
                     self.engine.send(Command::TogglePause);
                 }
@@ -630,7 +650,7 @@ impl Controller {
 
     fn set_loading(&mut self, loading: Option<Loading>) {
         self.loading = loading;
-        *self.shown_loading.write() = loading.map(|l| l.id);
+        *self.shown_loading.write() = loading.map(|l| (l.id, l.paused));
     }
 
     fn stop(&mut self) {
@@ -655,6 +675,12 @@ impl Controller {
             self.stop();
             return;
         };
+        // The old song goes quiet now: it would only play on under the new one's title while
+        // that opens (which can take a while from Spotify). Paused, not stopped: a "stopped"
+        // arriving after the new song is in would read as a song ending and skip on.
+        if self.loading.is_none() && self.engine.status().state == PlaybackState::Playing {
+            self.engine.send(Command::Pause);
+        }
         // The engine must not slide into the old follow-up while this one opens.
         if self.preloaded.take().is_some() {
             self.engine.send(Command::ClearPreload);
@@ -716,6 +742,14 @@ impl Controller {
             .read()
             .get(l.id)
             .map_or_else(|| "A song".to_owned(), |e| e.track.title.clone());
+        // Spotify kept saying "wait" for minutes: nothing else would play either.
+        if matches!(e, SourceError::RetryLater { .. }) {
+            self.emit(PlayerEvent::Error(format!(
+                "Spotify isn't letting songs load right now; try {title} again in a minute"
+            )));
+            self.stop();
+            return;
+        }
         self.failures += 1;
         if self.failures >= MAX_FAILURES_IN_ROW {
             self.emit(PlayerEvent::Error(format!(
@@ -765,13 +799,15 @@ impl Controller {
         }
         match &mut self.loading {
             Some(l) => l.paused = !m.playing,
-            None => self.refresh_preload(),
+            None => {
+                self.refresh_preload();
+                self.engine.send(if m.playing {
+                    Command::Play
+                } else {
+                    Command::Pause
+                });
+            }
         }
-        self.engine.send(if m.playing {
-            Command::Play
-        } else {
-            Command::Pause
-        });
     }
 
     /// Makes sure the engine's gapless follow-up matches what the queue says comes next.

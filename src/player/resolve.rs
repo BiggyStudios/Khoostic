@@ -11,6 +11,12 @@ use crate::model::{Track, TrackLocator};
 pub trait SourceResolver: Send + Sync {
     fn accepts(&self, locator: &TrackLocator) -> bool;
     fn open(&self, track: &Track) -> Result<Box<dyn AudioSource>, SourceError>;
+
+    /// Opening goes over the network and is rationed (Spotify): the player waits for rapid
+    /// skipping to settle and opens follow-ups later.
+    fn network(&self) -> bool {
+        false
+    }
 }
 
 pub struct LocalFiles;
@@ -44,6 +50,14 @@ impl Resolvers {
     pub fn with(mut self, r: impl SourceResolver + 'static) -> Self {
         self.0.push(Arc::new(r));
         self
+    }
+
+    /// Whether `track` comes over the network (see [`SourceResolver::network`]).
+    pub fn network(&self, track: &Track) -> bool {
+        self.0
+            .iter()
+            .find(|r| r.accepts(&track.locator))
+            .is_some_and(|r| r.network())
     }
 
     pub fn open(&self, track: &Track) -> Result<Box<dyn AudioSource>, SourceError> {

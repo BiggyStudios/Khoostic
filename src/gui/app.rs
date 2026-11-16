@@ -223,6 +223,8 @@ pub struct Gui {
     /// Listening together (None in headless runs).
     pub(crate) jams: Option<Arc<crate::jam::Jams>>,
     pub(crate) jam_invite: TextField,
+    /// Angle of the ring around the play button while a song opens.
+    pub(crate) load_spin: f32,
     pub(crate) anims: Anims,
     /// The view the page transition last started for.
     pub(crate) shown_view: View,
@@ -345,6 +347,7 @@ impl Gui {
             discord: None,
             jams: None,
             jam_invite: TextField::default(),
+            load_spin: 0.0,
             anims: Anims::default(),
             shown_view: View::Albums,
             view_since: Instant::now() - Duration::from_secs(1),

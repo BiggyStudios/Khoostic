@@ -2,12 +2,14 @@
 //! stream, our symphonia decoder plays it through the same engine as local files (so gapless,
 //! seeking, resampling and visualizers all just work).
 
+use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use librespot_audio::{AudioDecrypt, AudioFile};
-use librespot_core::{Session, SpotifyId, SpotifyUri};
+use librespot_core::audio_key::AudioKey;
+use librespot_core::{FileId, Session, SpotifyId, SpotifyUri};
 use librespot_metadata::audio::{AudioFileFormat, AudioItem};
 use parking_lot::Mutex;
 use symphonia::core::formats::probe::Hint;
@@ -129,6 +131,62 @@ impl AudioSource for SpotifySource {
     }
 }
 
+/// Spotify hands out decryption keys sparingly: a few in a row, then it refuses every request
+/// for about 20 seconds (per account; a new connection doesn't help, and asking during the pause
+/// seems to stretch it). So keys are remembered, and after a refusal none is asked for until the
+/// pause is likely over.
+#[derive(Default)]
+pub(crate) struct KeyGate {
+    keys: Mutex<HashMap<(SpotifyId, FileId), AudioKey>>,
+    /// No requests before this; and how many refusals in a row led here.
+    pause: Mutex<Option<(Instant, u32)>>,
+}
+
+/// Spotify is refusing keys for now: try again after this long.
+#[derive(Debug, thiserror::Error)]
+#[error("Spotify is pausing song loading for a moment")]
+pub(crate) struct Refused(pub Duration);
+
+/// Waits after the 1st, 2nd, 3rd... refusal in a row.
+const KEY_PAUSES: [u64; 4] = [8, 12, 20, 30];
+
+impl KeyGate {
+    async fn get(
+        &self,
+        session: &Session,
+        track: SpotifyId,
+        file: FileId,
+    ) -> anyhow::Result<AudioKey> {
+        if let Some(k) = self.keys.lock().get(&(track, file)) {
+            return Ok(*k);
+        }
+        let now = Instant::now();
+        if let Some((until, _)) = *self.pause.lock()
+            && until > now
+        {
+            return Err(Refused(until - now).into());
+        }
+        match session.audio_key().request(track, file).await {
+            Ok(k) => {
+                self.keys.lock().insert((track, file), k);
+                *self.pause.lock() = None;
+                Ok(k)
+            }
+            Err(e) if e.kind == librespot_core::error::ErrorKind::Unavailable => {
+                let mut pause = self.pause.lock();
+                let strikes = pause.map_or(0, |(_, s)| s) + 1;
+                let wait = Duration::from_secs(
+                    KEY_PAUSES[(strikes as usize - 1).min(KEY_PAUSES.len() - 1)],
+                );
+                *pause = Some((Instant::now() + wait, strikes));
+                tracing::info!(strikes, ?wait, "Spotify refused a decryption key");
+                Err(Refused(wait).into())
+            }
+            Err(e) => Err(anyhow::Error::from(e).context("getting decryption key")),
+        }
+    }
+}
+
 /// This track can't be played (as opposed to Spotify being briefly unreachable).
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -137,6 +195,7 @@ pub(crate) struct NotPlayable(pub String);
 /// Network part of opening a track (must run on the tokio runtime).
 pub(crate) async fn fetch(
     session: &Session,
+    keys: &KeyGate,
     id: &str,
     bitrate: Bitrate,
 ) -> anyhow::Result<(AudioDecrypt<AudioFile>, u64, Duration)> {
@@ -174,6 +233,8 @@ pub(crate) async fn fetch(
     let track_id: SpotifyId = (&item.track_id)
         .try_into()
         .map_err(|_| anyhow::anyhow!("bad track id"))?;
+    // The key first: no point downloading a song Spotify won't unlock right now.
+    let key = keys.get(session, track_id, file_id).await?;
     let file = AudioFile::open(session, file_id, bytes_per_second(format))
         .await
         .context("opening audio stream")?;
@@ -181,11 +242,6 @@ pub(crate) async fn fetch(
         .get_stream_loader_controller()
         .context("stream controller")?
         .len() as u64;
-    let key = session
-        .audio_key()
-        .request(track_id, file_id)
-        .await
-        .context("getting decryption key")?;
     tracing::info!(track = %item.name, ?format, "streaming from Spotify");
     Ok((
         AudioDecrypt::new(Some(key), file),

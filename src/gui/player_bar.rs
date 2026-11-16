@@ -127,15 +127,23 @@ impl Gui {
                     );
                 }
                 let artist = e.track.artists.first().cloned().unwrap_or_default();
-                let sub = match e.track.artist_line() {
-                    s if s.is_empty() => crate::gui::views::lists::album_of(&e.track),
-                    s => s,
+                // Spotify makes us wait sometimes (it rations song keys): say so, with a countdown.
+                let waiting = snap.waiting.map(|w| {
+                    format!(
+                        "Waiting for Spotify · {} s",
+                        w.as_secs_f32().ceil().max(1.0)
+                    )
+                });
+                let sub = match (&waiting, e.track.artist_line()) {
+                    (Some(w), _) => w.clone(),
+                    (None, s) if s.is_empty() => crate::gui::views::lists::album_of(&e.track),
+                    (None, s) => s,
                 };
                 let sub_w = ui
                     .measure(&sub, t.font_size - 1.5, Weight::Regular)
                     .min(text_w);
                 let sub_r = Rect::new(tx, r.y + 49.0, sub_w, 20.0);
-                let ah = !artist.is_empty() && ui.hovered(sub_r);
+                let ah = waiting.is_none() && !artist.is_empty() && ui.hovered(sub_r);
                 ui.label(
                     &sub,
                     tx,
@@ -143,7 +151,13 @@ impl Gui {
                     text_w,
                     t.font_size - 1.5,
                     Weight::Regular,
-                    if ah { t.fg } else { t.dim },
+                    if waiting.is_some() {
+                        t.accent
+                    } else if ah {
+                        t.fg
+                    } else {
+                        t.dim
+                    },
                 );
                 if ah {
                     ui.c.rect(
@@ -226,6 +240,15 @@ impl Gui {
             ui.c.push_fx(0.0, 0.0, morph);
             icons::draw(ui.c, Icon::Pause, icon_r, ink);
             ui.c.pop_fx();
+        }
+        // A song still opening: a ring turns around the button.
+        let lo = ui
+            .anim
+            .to(pid ^ 11, snap.loading as u8 as f32, anim::NORMAL);
+        if lo > 0.01 {
+            self.load_spin = (self.load_spin + ui.anim.dt() * 5.0) % std::f32::consts::TAU;
+            let a = self.load_spin;
+            ui.c.arc(cx, cy, rad + 5.0, a, a + 1.9, 2.5, t.accent.alpha(lo));
         }
         if ui.clicked(play) {
             player.send(Cmd::TogglePause);
@@ -709,6 +732,7 @@ mod tests {
             sample_rate: 48_000,
             device: String::new(),
             loading: false,
+            waiting: None,
         }
     }
 
