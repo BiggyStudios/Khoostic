@@ -4,7 +4,7 @@
 //! It talks to the Discord desktop app over its local IPC (the `discord-ipc-N` named pipe on
 //! Windows, a Unix socket elsewhere); nothing goes over the network from here, except a cover
 //! lookup on Deezer's public API for your own songs (Discord shows images by URL). Discord
-//! needs an application id: the application's name is what Discord shows above the song.
+//! uses Khoostic's Discord application ([`APP_ID`]) unless the config names another.
 //!
 //! A background thread follows the player, reconnects when Discord starts later, and only
 //! sends when something visible changed (Discord allows 5 updates per 20 seconds).
@@ -23,6 +23,18 @@ use serde_json::{Value, json};
 use crate::config::DiscordConfig;
 use crate::model::{CoverRef, Track, TrackLocator};
 use crate::player::{PlayerHandle, PlayerSnapshot, State};
+
+/// Khoostic's Discord application (its name is what Discord shows). Used when the config names
+/// none; it's public, like every application id.
+pub const APP_ID: &str = "1378431160027451534";
+
+/// The configured application id, or Khoostic's own.
+fn app_id(configured: &str) -> String {
+    match configured.trim() {
+        "" => APP_ID.to_owned(),
+        id => id.to_owned(),
+    }
+}
 
 /// How often to try again while Discord isn't running.
 const RETRY: Duration = Duration::from_secs(15);
@@ -81,7 +93,7 @@ impl Discord {
             .ok();
         let inner = Arc::new(Inner {
             enabled: AtomicBool::new(config.enabled),
-            client_id: Mutex::new(config.client_id.trim().to_owned()),
+            client_id: Mutex::new(app_id(&config.client_id)),
             status: Mutex::new(Status::Off),
             party: Mutex::new(None),
             covers: Mutex::default(),
@@ -105,16 +117,6 @@ impl Discord {
 
     pub fn set_enabled(&self, on: bool) {
         self.inner.enabled.store(on, Ordering::Release);
-        self.inner.wake();
-    }
-
-    pub fn client_id(&self) -> String {
-        self.inner.client_id.lock().clone()
-    }
-
-    /// Connects with another application id (reconnecting if needed).
-    pub fn set_client_id(&self, id: &str) {
-        *self.inner.client_id.lock() = id.trim().to_owned();
         self.inner.wake();
     }
 

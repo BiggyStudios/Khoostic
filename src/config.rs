@@ -186,8 +186,8 @@ impl Default for JamConfig {
     }
 }
 
-/// Discord status ("Listening to …"). Discord shows the name of the application whose id this is;
-/// create one at discord.com/developers/applications.
+/// Discord status ("Listening to …"). `client_id` picks the Discord application whose name is
+/// shown; empty means Khoostic's own.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DiscordConfig {

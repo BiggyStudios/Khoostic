@@ -19,7 +19,7 @@ only uses the ones listed above it here (keep it that way; no cycles back up).
 | `player/` | `Player` controller (queue ↔ engine, gapless preload), `open.rs` (songs open on their own thread: newest pick wins, rapid skips settle, brief outages retried), `SourceResolver`s, file browser model |
 | `library/` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists, liked local songs |
 | `spotify/` | Browser sign-in (OAuth PKCE, cancellable local listener), library, search and lyrics over Spotify's client API (spclient, `api.rs`), artist pages (`artist.rs`), liked songs and followed artists (`collection.rs`), librespot streaming as an `AudioSource`, `SpotifyResolver` |
-| `discord.rs` | Discord status over the desktop app's local IPC (pipe / socket): song, cover (Deezer lookup for local songs), progress, jam party; needs an application id (`[discord] client_id`) |
+| `discord.rs` | Discord status over the desktop app's local IPC (pipe / socket): song, cover (Deezer lookup for local songs), progress, jam party; Khoostic's Discord application id is built in (`discord::APP_ID`; `[discord] client_id` overrides) |
 | `genres.rs` | Artist genres from MusicBrainz, falling back to Deezer's public API |
 | `lastfm/` | Signed API client, browser sign-in, scrobble rules (`tracker.rs`, pure), background scrobbler with a persisted offline queue, similar tracks |
 | `discovery.rs` | Song radio (Spotify radio + Last.fm similar, matched to local files first, library-only fallback) and the autoplay watcher |

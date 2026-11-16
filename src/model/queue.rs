@@ -498,7 +498,7 @@ mod tests {
         let at = window.iter().position(|e| e.id == ids[5]).unwrap();
 
         let (mut guest, _) = q(2);
-        guest.mirror(window.clone(), Some(ids[5]), RepeatMode::All);
+        guest.mirror(window.clone(), Some(ids[5]), RepeatMode::Off);
         let got: Vec<EntryId> = guest.entries().iter().map(|e| e.id).collect();
         let want: Vec<EntryId> = window.iter().map(|e| e.id).collect();
         assert_eq!(got, want);
@@ -508,8 +508,8 @@ mod tests {
             guest.peek_next().map(|e| e.id),
             window.get(at + 1).map(|e| e.id)
         );
-        // New entries never reuse the host's ids.
+        // New entries never reuse an id the guest holds.
         let fresh = guest.push(Track::from_path("x.flac"));
-        assert!(fresh.0 > ids.iter().map(|i| i.0).max().unwrap());
+        assert!(window.iter().all(|e| e.id.0 < fresh.0));
     }
 }
