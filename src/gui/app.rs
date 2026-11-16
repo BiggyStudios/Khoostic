@@ -193,6 +193,15 @@ pub struct Gui {
     pub(crate) pulse: f32,
     /// The visualizer page's 3D mode.
     pub(crate) viz3d: crate::gui::views::visualizer::Viz3d,
+    /// The visualizer's knobs and the user's saved presets (`[visualizer]` in the config).
+    pub(crate) viz_tuning: crate::config::VisualizerTuning,
+    pub(crate) viz_presets: std::collections::BTreeMap<String, crate::config::VisualizerTuning>,
+    /// Settings: which knob group is open, the slider being dragged, unsaved slider changes
+    /// (written when the drag ends), and the name field for saving a preset.
+    pub(crate) viz_group: crate::config::visualizer::Group,
+    pub(crate) viz_drag: Option<usize>,
+    pub(crate) viz_dirty: bool,
+    pub(crate) preset_name: TextField,
     pub spotify: Option<Arc<crate::spotify::Spotify>>,
     pub(crate) fetch: Option<crate::gui::ui::UrlFetcher>,
     pub(crate) sp: crate::gui::spotify::SpState,
@@ -310,6 +319,12 @@ impl Gui {
             last_frame: Instant::now(),
             pulse: 0.0,
             viz3d: Default::default(),
+            viz_tuning: config.visualizer.tuning.clean(),
+            viz_presets: config.visualizer.presets.clone(),
+            viz_group: crate::config::visualizer::Group::Wave,
+            viz_drag: None,
+            viz_dirty: false,
+            preset_name: TextField::default(),
             spotify,
             fetch,
             sp: Default::default(),
@@ -606,7 +621,10 @@ impl Gui {
 
     /// A text field has the keyboard (global shortcuts are off).
     fn typing(&self) -> bool {
-        self.search.focused || self.lf_key.focused || self.lf_secret.focused
+        self.search.focused
+            || self.lf_key.focused
+            || self.lf_secret.focused
+            || self.preset_name.focused
     }
 
     /// Starts building a radio from `seed`; it replaces what's coming up when ready.

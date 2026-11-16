@@ -21,6 +21,31 @@ const BAR_ROWS: u32 = 384u;
 /// No cube ever gets closer to the camera than this (world units).
 const NEAR: f32 = 1.9;
 
+// Where each tuning knob sits in `tune` (the order of `config/visualizer.rs`; a test checks).
+const T_CUBES: u32 = 0u;
+const T_SPLASHES: u32 = 1u;
+const T_CUBE_SIZE: u32 = 2u;
+const T_SPLASH_SIZE: u32 = 3u;
+const T_LENGTH: u32 = 4u;
+const T_WIDTH: u32 = 5u;
+const T_THICKNESS: u32 = 6u;
+const T_SPLASH_SPREAD: u32 = 7u;
+const T_REACH: u32 = 8u;
+const T_TWIST: u32 = 9u;
+const T_HOLD: u32 = 16u;
+const T_DRIFT: u32 = 17u;
+const T_BURST: u32 = 18u;
+const T_SLACK: u32 = 20u;
+const T_BASS_PUNCH: u32 = 22u;
+const T_MID_WHIP: u32 = 23u;
+const T_PUFF: u32 = 24u;
+const T_FLASH: u32 = 25u;
+const T_METAL: u32 = 32u;
+const T_BAND_GLOW: u32 = 33u;
+const T_BACKDROP_GLOW: u32 = 35u;
+const T_WALL_BULGE: u32 = 37u;
+const T_BAR_GAP: u32 = 38u;
+
 struct Scene {
     view_proj: mat4x4<f32>,
     // xyz: camera position; w: time (s)
@@ -45,6 +70,8 @@ struct Scene {
     // x: how far the ribbon has spun (mostly the mids); y: mid punch (sudden rises); z: how
     // full the music is overall (smoothed, 0..1)
     motion2: vec4<f32>,
+    // the tuning knobs (config `[visualizer.tuning]`), read through `tune(T_...)`
+    tune: array<vec4<f32>, 11>,
 };
 
 struct Cube {
@@ -62,6 +89,10 @@ struct Cube {
 fn band(i: u32) -> f32 {
     let b = min(i, BARS - 1u);
     return u.bands[b / 4u][b % 4u];
+}
+
+fn tune(i: u32) -> f32 {
+    return u.tune[i / 4u][i % 4u];
 }
 
 fn hash(n: u32) -> f32 {
@@ -91,7 +122,7 @@ fn formation(i: u32) -> vec4<f32> {
     let col = k % 2u;
     let row = k / 2u;
     // The 2D visualizer's layout, in logical pixels.
-    let gap = 4.0;
+    let gap = tune(T_BAR_GAP);
     let bar_w = max((w - gap * f32(BARS - 1u)) / f32(BARS), 1.0);
     let base = h - 24.0;
     let max_h = h - 48.0;
@@ -110,7 +141,7 @@ fn formation(i: u32) -> vec4<f32> {
 // The top of cube `i`'s bar, in world units.
 fn bar_top(i: u32) -> f32 {
     let h = u.bars.w;
-    let bar_w = max((u.bars.z - 4.0 * f32(BARS - 1u)) / f32(BARS), 1.0);
+    let bar_w = max((u.bars.z - tune(T_BAR_GAP) * f32(BARS - 1u)) / f32(BARS), 1.0);
     let top = u.bars.y + h - 24.0 - max(band(i % BARS) * (h - 48.0), bar_w);
     return (u.view.y * 0.5 - top) / (u.view.y * 0.5);
 }
@@ -170,7 +201,7 @@ fn wall(i: u32) -> vec4<f32> {
     // Each row is a frequency: it bulges toward the middle as that band gets loud.
     let level = band(row * 2u);
     let jitter = hash(i) * 0.05;
-    let push = level * 0.35 * u.view.z;
+    let push = level * tune(T_WALL_BULGE) * u.view.z;
     let x = side * (2.55 + jitter + (1.0 - u.view.z) * 1.5 - push);
     let y = -1.55 + f32(row) * 0.1;
     let z = 2.4 - f32(col) * 0.19;
@@ -250,21 +281,22 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     // time behind it, spread around it in a tube that widens toward the tail. The splashes are
     // a looser spray around the same wave. Nothing comes out of a single point.
     let tau = u.motion.x;
-    let lag = seed.x * 3.4;
+    let lag = seed.x * tune(T_LENGTH);
     // The wave roams wider when the music is full.
-    let reach = 0.8 + 0.5 * u.motion2.z;
+    let reach = (0.8 + 0.5 * u.motion2.z) * tune(T_REACH);
     let here = path(tau - lag) * reach;
     let tangent = safe_normalize(path(tau - lag + 0.05) * reach - here);
     let n1 = safe_normalize(cross(tangent, vec3<f32>(0.0, 1.0, 0.3)));
     let n2 = cross(tangent, n1);
     // A ribbon: wide one way, thin the other, twisting along its length.
     // Spinning around its own length, mostly with the mids.
-    let twist = lag * 1.3 + u.motion2.x;
+    let twist = lag * 1.3 * tune(T_TWIST) + u.motion2.x;
     let wide = n1 * cos(twist) + n2 * sin(twist);
     let thin = cross(tangent, wide);
-    let across = (seed.y * 2.0 - 1.0) * (0.12 + 0.12 * lag);
-    let through = (seed.z * 2.0 - 1.0) * (0.02 + 0.03 * lag);
-    let puff = (1.0 + bass * 0.3 + beat * 0.25) * select(1.0, 1.4, spark);
+    let across = (seed.y * 2.0 - 1.0) * (0.12 + 0.12 * lag) * tune(T_WIDTH);
+    let through = (seed.z * 2.0 - 1.0) * (0.02 + 0.03 * lag) * tune(T_THICKNESS);
+    let puff = (1.0 + (bass * 0.3 + beat * 0.25) * tune(T_PUFF))
+        * select(1.0, tune(T_SPLASH_SPREAD), spark);
     let target_pos = here + (wide * across + thin * through) * puff;
 
     let kick = u.motion.y;
@@ -274,23 +306,24 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     let blast = safe_normalize(flatten(p - here, tangent) + (seed - 0.5) * 0.3);
     // Pulled along to its place in the wave (the splashes loosely). Right after a hit the hold
     // goes slack, so the blast carries before the wave reels it back in.
-    let slack = 1.0 - 0.6 * impact;
-    v += (target_pos - p) * select(10.0, 4.5, spark) * slack * dt;
-    v *= 1.0 - min(dt * select(4.5, 2.2, spark) * (1.0 - 0.6 * impact), 1.0);
+    let slack = 1.0 - tune(T_SLACK) * impact;
+    let hold = tune(T_HOLD);
+    v += (target_pos - p) * select(1.0, 0.45, spark) * hold * slack * dt;
+    v *= 1.0 - min(dt * select(4.5, 2.2, spark) * sqrt(hold / 10.0) * slack, 1.0);
     // A beat hits: every cube gets a burst of speed at once, out from the spine and forward
     // along the wave, harder the louder the bass and this cube's band.
     if kick > 0.5 {
         let force = (0.6 + 1.2 * seed.y) * (0.6 + bass + 0.6 * mine) * select(1.0, 1.6, spark);
-        v += blast * force + tangent * (1.2 + bass * 1.5);
+        v += (blast * force + tangent * (1.2 + bass * 1.5)) * tune(T_BURST);
     }
     // Sudden bass (not just loud bass) keeps blowing the ribbon outward.
-    v += blast * punch * select(6.0, 10.0, spark) * dt;
+    v += blast * punch * select(6.0, 10.0, spark) * tune(T_BASS_PUNCH) * dt;
     // Sudden mids whip the cubes around the spine.
     let mid_punch = u.motion2.y;
-    v += (cross(tangent, blast) * 9.0 + blast * 2.0) * mid_punch * select(1.0, 1.5, spark) * dt;
+    v += (cross(tangent, blast) * 9.0 + blast * 2.0) * mid_punch * select(1.0, 1.5, spark) * tune(T_MID_WHIP) * dt;
     // Sand blowing about in the wave; harder when this cube's band is loud.
     let flow = curl(p * 0.9 + seed * 0.2, t * (0.6 + mid * 0.8));
-    v += flow * (0.06 + 0.3 * mine + 0.15 * treble) * select(3.0, 5.0, spark) * dt;
+    v += flow * (0.06 + 0.3 * mine + 0.15 * treble) * select(3.0, 5.0, spark) * tune(T_DRIFT) * dt;
     p += v * dt;
     // A safety net only: never closer to the camera than NEAR.
     let from_cam = p - u.cam.xyz;
@@ -300,7 +333,11 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
         v -= away * min(dot(v, away), 0.0);
     }
     // Fine sand, with a few big chunks among the splashes.
-    let target_size = select(0.0035 + seed.z * 0.008, 0.006 + 0.026 * pow(seed.z, 9.0), spark);
+    let target_size = select(
+        (0.0035 + seed.z * 0.008) * tune(T_CUBE_SIZE),
+        (0.006 + 0.026 * pow(seed.z, 9.0)) * tune(T_SPLASH_SIZE),
+        spark,
+    );
     let size = mix(c.pos.w, target_size, min(dt * 2.5, 1.0));
     cubes[i].pos = vec4<f32>(p, size);
     cubes[i].vel = vec4<f32>(v, age);
@@ -365,7 +402,10 @@ fn vs_cube(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> V
     }
     // A backstop: anything that still ends up near the camera shrinks away.
     let near = smoothstep(NEAR * 0.75, NEAR + 0.2, length(c.pos.xyz - u.cam.xyz));
-    let size = select(c.pos.w * near, c.pos.w, wall_cube || age < 0.0);
+    // Thinned out by the Cubes / Splashes knobs (only once loose; the bars stay whole).
+    let keep = select(tune(T_CUBES), tune(T_SPLASHES), spark);
+    let thinned = select(1.0, 1.0 - loose, hash(i * 7u + 3u) >= keep);
+    let size = select(c.pos.w * near * thinned, c.pos.w, wall_cube || age < 0.0);
     let world = c.pos.xyz + lp * size;
 
     var out: VsOut;
@@ -380,7 +420,8 @@ fn vs_cube(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> V
     let bar_color = spectrum(row);
     let storm = select(spectrum(seed.x * 0.38), spectrum(0.78 + seed.x * 0.22), spark);
     out.color = mix(bar_color, storm, loose);
-    out.glow = mix(0.9, 0.02 + mine * mine * mine * select(0.45, 0.7, spark) + u.motion.z * 0.25, loose);
+    out.glow = mix(0.9, 0.02 + mine * mine * mine * select(0.45, 0.7, spark) * tune(T_BAND_GLOW)
+        + u.motion.z * 0.25 * tune(T_FLASH), loose);
     out.metal = 1.0;
     if wall_cube {
         let level = band(((i - SWARM) % (WALL_ROWS * WALL_COLS)) / WALL_COLS * 2u);
@@ -415,7 +456,7 @@ fn fs_cube(in: VsOut) -> @location(0) vec4<f32> {
     // Metal: the color tints the reflection; edges catch more of it.
     let f0 = mix(vec3<f32>(0.04), in.color, in.metal);
     let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - ndv, 5.0);
-    let reflection = environment(reflect(-v, n)) * fresnel * 1.6;
+    let reflection = environment(reflect(-v, n)) * fresnel * tune(T_METAL);
     let diffuse = in.color * (0.03 + 0.2 * max(dot(n, key), 0.0)) * (1.0 - in.metal * 0.7);
     let spec = pow(max(dot(n, h), 0.0), 120.0) * 1.8 * mix(vec3<f32>(1.0), in.color, 0.35);
     let rim = u.accent.rgb * pow(max(dot(n, back), 0.0), 2.0) * 0.25;
@@ -449,6 +490,7 @@ fn fs_bg(in: BgOut) -> @location(0) vec4<f32> {
     // The panel color, darkening at the edges as the room opens up, with a glow behind the
     // storm that breathes with the bass.
     let vignette = mix(1.0, (1.0 - smoothstep(0.2, 1.1, d) * 0.6) * 0.6, into_3d);
-    let glow = spectrum(0.35) * exp(-d * d * 4.0) * (0.015 + 0.05 * u.audio.x + 0.12 * u.motion.z) * (0.4 + 0.6 * into_3d);
+    let glow = spectrum(0.35) * exp(-d * d * 4.0) * (0.015 + 0.05 * u.audio.x + 0.12 * u.motion.z * tune(T_FLASH))
+        * (0.4 + 0.6 * into_3d) * tune(T_BACKDROP_GLOW);
     return vec4<f32>(u.surface.rgb * vignette + glow, 1.0);
 }

@@ -20,7 +20,7 @@ impl Gui {
         &mut self,
         ui: &mut Ui,
         r: Rect,
-        _player: &Player,
+        player: &Player,
         snap: &PlayerSnapshot,
     ) {
         let t = ui.theme.clone();
@@ -151,6 +151,10 @@ impl Gui {
             self.save_bool("gui.cover_visualizer", i == 1);
         }
         y += 66.0;
+
+        section(ui, &mut y, "VISUALIZER");
+        let analysis = player.analysis();
+        self.visualizer_settings(ui, body, control_x, &mut y, &analysis);
 
         section(ui, &mut y, "LIBRARY");
         let dirs = if self.music_dirs.is_empty() {

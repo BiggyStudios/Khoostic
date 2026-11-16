@@ -81,62 +81,10 @@ impl Gui {
             self.bars(ui, r, a, dt);
         }
         if let Some((mode, phase, depth, walls, opacity)) = scene {
-            self.viz3d.time += dt;
-            let v = &mut self.viz3d;
-            let kick = a.beat_count != v.beats;
-            v.beats = a.beat_count;
-            v.impact = if kick {
-                1.0
-            } else {
-                v.impact * (-dt * 6.0).exp()
-            };
-            v.slow_bass += (a.bass - v.slow_bass) * (1.0 - (-dt * 2.5).exp());
-            let punch = ((a.bass - v.slow_bass) * 3.0).clamp(0.0, 1.0);
-            v.slow_mid += (a.mid - v.slow_mid) * (1.0 - (-dt * 3.0).exp());
-            let mid_punch = ((a.mid - v.slow_mid) * 4.0).clamp(0.0, 1.0);
-            let level = (a.bass + a.mid + a.treble) / 3.0;
-            v.fullness += (level - v.fullness) * (1.0 - (-dt * 1.5).exp());
-            // Spins with the mids (and a little treble), always a little.
-            v.spin += dt * (0.25 + 2.6 * a.mid + 1.2 * a.treble + 4.0 * mid_punch);
-            // Swings faster with the whole mix and lunges on every hit.
-            v.tau += dt
-                * (0.45 + 0.8 * a.bass + 1.3 * a.mid + 0.5 * a.treble + 3.5 * v.impact * v.impact);
-            let impact = v.impact;
-            ui.anim.keep_alive();
             // Edge to edge across the page panel; the bars keep their place inside it.
             let view = Rect::new(r.x - PAD, r.y - PAD + 4.0, r.w + 2.0 * PAD, r.h + PAD + 4.0);
-            let frame = SwarmFrame {
-                size: (0, 0),
-                logical: (0.0, 0.0),
-                bars: [r.x - view.x, r.y - view.y, r.w, r.h],
-                time: self.viz3d.time,
-                tau: self.viz3d.tau,
-                kick,
-                impact,
-                punch,
-                spin: self.viz3d.spin,
-                mid_punch,
-                fullness: self.viz3d.fullness,
-                dt,
-                mode,
-                phase,
-                depth,
-                walls,
-                bands: a.bands,
-                bass: a.bass,
-                mid: a.mid,
-                treble: a.treble,
-                beat: a.beat,
-                spectrum: [
-                    t.gradient(0.0),
-                    t.gradient(1.0 / 3.0),
-                    t.gradient(2.0 / 3.0),
-                    t.gradient(1.0),
-                ],
-                accent: t.accent,
-                surface: t.surface,
-                fg: t.fg,
-            };
+            let bars = [r.x - view.x, r.y - view.y, r.w, r.h];
+            let frame = self.swarm_frame(ui, a, dt, bars, (mode, phase, depth, walls));
             ui.c.swarm(view, frame, 12.0, opacity);
         }
 
@@ -174,14 +122,16 @@ impl Gui {
         let t = ui.theme.clone();
         self.pulse = (self.pulse - dt * 2.5).max(a.beat);
         let (cx, cy) = r.center();
+        let k = self.viz_tuning;
         let glow = r.w.min(r.h) * (0.25 + 0.12 * self.pulse);
         ui.c.glow(
             Rect::new(cx - glow, cy - glow, glow * 2.0, glow * 2.0),
-            t.gradient(0.6).alpha(0.10 + 0.25 * self.pulse),
+            t.gradient(0.6)
+                .alpha(((0.10 + 0.25 * self.pulse) * k.bar_glow).min(1.0)),
             glow,
             glow * 0.6,
         );
-        let gap = 4.0;
+        let gap = k.bar_gap;
         let bar_w = ((r.w - gap * (BANDS as f32 - 1.0)) / BANDS as f32).max(1.0);
         let base = r.bottom() - 24.0;
         let max_h = r.h - 48.0;
@@ -195,7 +145,7 @@ impl Gui {
                 t.gradient(0.0).alpha(0.5),
                 bar_w / 2.0,
             );
-            if a.peaks[i] > 0.02 {
+            if k.peaks > 0.5 && a.peaks[i] > 0.02 {
                 let peak = base - a.peaks[i] * max_h - 6.0;
                 ui.c.rect(
                     Rect::new(x, peak, bar_w, 3.0),
@@ -203,6 +153,83 @@ impl Gui {
                     1.5,
                 );
             }
+        }
+    }
+}
+
+impl Gui {
+    /// Moves the storm's music tracking on by one frame and builds what the GPU needs. Call
+    /// once per frame, from whichever page shows the storm (the visualizer, or the preview in
+    /// Settings). `stage` is (mode, seconds in it, how 3D the camera is, how far the walls
+    /// are up).
+    pub(crate) fn swarm_frame(
+        &mut self,
+        ui: &mut Ui,
+        a: &AnalysisFrame,
+        dt: f32,
+        bars: [f32; 4],
+        stage: (Mode, f32, f32, f32),
+    ) -> SwarmFrame {
+        let t = ui.theme.clone();
+        let k = self.viz_tuning;
+        ui.anim.keep_alive();
+        let v = &mut self.viz3d;
+        v.time += dt;
+        let kick = a.beat_count != v.beats;
+        v.beats = a.beat_count;
+        v.impact = if kick {
+            1.0
+        } else {
+            v.impact * (-dt * k.recover).exp()
+        };
+        v.slow_bass += (a.bass - v.slow_bass) * (1.0 - (-dt * 2.5).exp());
+        let punch = ((a.bass - v.slow_bass) * 3.0).clamp(0.0, 1.0);
+        v.slow_mid += (a.mid - v.slow_mid) * (1.0 - (-dt * 3.0).exp());
+        let mid_punch = ((a.mid - v.slow_mid) * 4.0).clamp(0.0, 1.0);
+        let level = (a.bass + a.mid + a.treble) / 3.0;
+        v.fullness += (level - v.fullness) * (1.0 - (-dt * 1.5).exp());
+        // Spins with the mids (and a little treble), always a little.
+        v.spin += dt * (k.spin + k.mid_spin * a.mid + 1.2 * a.treble + 4.0 * mid_punch);
+        // Swings faster with the whole mix and lunges on every hit.
+        v.tau += dt
+            * (k.speed
+                + k.bass_speed * a.bass
+                + k.mid_speed * a.mid
+                + k.treble_speed * a.treble
+                + k.lunge * v.impact * v.impact);
+        let (mode, phase, depth, walls) = stage;
+        SwarmFrame {
+            size: (0, 0),
+            logical: (0.0, 0.0),
+            bars,
+            time: v.time,
+            tau: v.tau,
+            kick,
+            impact: v.impact,
+            punch,
+            spin: v.spin,
+            mid_punch,
+            fullness: v.fullness,
+            tuning: k,
+            dt,
+            mode,
+            phase,
+            depth,
+            walls,
+            bands: a.bands,
+            bass: a.bass,
+            mid: a.mid,
+            treble: a.treble,
+            beat: a.beat,
+            spectrum: [
+                t.gradient(0.0),
+                t.gradient(1.0 / 3.0),
+                t.gradient(2.0 / 3.0),
+                t.gradient(1.0),
+            ],
+            accent: t.accent,
+            surface: t.surface,
+            fg: t.fg,
         }
     }
 }

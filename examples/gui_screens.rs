@@ -202,6 +202,27 @@ fn main() -> anyhow::Result<()> {
             ..Default::default()
         },
     )?;
+    // Visualizer settings: pick the Wild preset, open the Camera knobs, then reset.
+    h.frame(&click(524.0, 391.0, false), &player)?;
+    shot(&mut h, "settings-viz-camera", &click(613.0, 497.0, false))?;
+    shot(&mut h, "settings-viz-reset", &click(740.0, 442.0, false))?;
+    // Drag the Distance slider to the right.
+    let drag = |x: f32, pressed: bool, down: bool, released: bool| Input {
+        mouse: Some((x, 553.0)),
+        pressed,
+        down,
+        released,
+        ..Default::default()
+    };
+    h.frame(&drag(704.0, true, true, false), &player)?;
+    h.frame(&drag(760.0, false, true, false), &player)?;
+    h.frame(&drag(800.0, false, true, false), &player)?;
+    shot(
+        &mut h,
+        "settings-viz-drag",
+        &drag(800.0, false, false, true),
+    )?;
+    h.frame(&click(740.0, 442.0, false), &player)?;
     shot(&mut h, "visualizer", &keys(&[Key::Char('6')]))?;
     // 3D: the bars crumble into the storm, then fly back.
     mid(&mut h, "viz3d-1-crumble", &click(860.0, 109.0, false), 450)?;

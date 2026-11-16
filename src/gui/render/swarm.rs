@@ -2,6 +2,7 @@
 //! (4x MSAA, depth) into an offscreen texture, and the UI shows that texture like any image
 //! ([`ImageId::SCENE`]), so clipping, rounded corners and fades work as usual.
 
+use crate::config::VisualizerTuning;
 use crate::gui::render::Color;
 use crate::gui::render::images::{ImageId, ImageStore};
 
@@ -38,6 +39,8 @@ pub struct SwarmFrame {
     pub mid_punch: f32,
     /// How full the music is overall (smoothed, 0..1).
     pub fullness: f32,
+    /// The user's knobs (`[visualizer.tuning]`).
+    pub tuning: VisualizerTuning,
     pub dt: f32,
     pub mode: Mode,
     /// Seconds since `mode` started.
@@ -83,6 +86,7 @@ struct Uniforms {
     bands: [[f32; 4]; 16],
     motion: [f32; 4],
     motion2: [f32; 4],
+    tune: [[f32; 4]; 11],
 }
 
 struct Targets {
@@ -313,7 +317,12 @@ impl Swarm {
             cam: [eye[0], eye[1], eye[2], f.time],
             params: [f.dt.clamp(0.0, 1.0 / 20.0), f.phase, mode, f.depth],
             audio: [f.bass, f.mid, f.treble, f.beat],
-            layout: [f.logical.0, f.logical.1, f.walls, 0.45 * f.depth],
+            layout: [
+                f.logical.0,
+                f.logical.1,
+                f.walls * f.tuning.walls,
+                f.tuning.fog * f.depth,
+            ],
             bars: f.bars,
             spectrum: f.spectrum.map(lin),
             accent: lin(f.accent),
@@ -322,6 +331,7 @@ impl Swarm {
             bands,
             motion: [f.tau, f.kick as u8 as f32, f.impact, f.punch],
             motion2: [f.spin, f.mid_punch, f.fullness, 0.0],
+            tune: f.tuning.to_gpu(),
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         self.pending = true;
@@ -381,22 +391,23 @@ fn camera(f: &SwarmFrame) -> ([f32; 3], [f32; 3], f32) {
     let flat_fov = 2.0 * (1.0 / flat_dist).atan();
     let d = smooth(f.depth);
     let t = f.time;
-    let swing = 0.2 * (t * 0.07).sin() + 0.06 * (t * 0.19).sin();
+    let k = &f.tuning;
+    let swing = k.sway * ((t * 0.07).sin() + 0.3 * (t * 0.19).sin());
     // Each hit punches the camera in a little.
-    let dist = 4.3 - 0.25 * f.bass - 0.45 * f.impact * f.impact;
+    let dist = k.distance - k.bass_zoom * f.bass - k.camera_punch * f.impact * f.impact;
     let deep = [
         swing.sin() * dist,
         0.35 + 0.18 * (t * 0.13).sin(),
         swing.cos() * dist,
     ];
-    let shake = 0.05 * f.impact * f.impact;
+    let shake = k.shake * f.impact * f.impact;
     let eye = [
         lerp(0.0, deep[0] + shake * (t * 47.0).sin(), d),
         lerp(0.0, deep[1] + shake * (t * 53.0).cos(), d),
         lerp(flat_dist, deep[2], d),
     ];
     let look = [0.0, lerp(0.0, -0.05, d), 0.0];
-    (eye, look, lerp(flat_fov, 50f32.to_radians(), d))
+    (eye, look, lerp(flat_fov, k.fov.to_radians(), d))
 }
 
 fn smooth(x: f32) -> f32 {
@@ -483,6 +494,7 @@ mod tests {
             spin: 0.0,
             mid_punch: 0.0,
             fullness: 0.0,
+            tuning: VisualizerTuning::default(),
             dt: 0.016,
             mode: Mode::Bars,
             phase: 0.0,

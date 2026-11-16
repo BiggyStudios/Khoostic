@@ -14,6 +14,7 @@ pub mod playlists;
 pub mod search;
 pub mod settings;
 pub mod visualizer;
+pub mod viz_settings;
 
 use crate::audio::AnalysisFrame;
 use crate::gui::app::{Gui, ROW_H, View};

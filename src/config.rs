@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+pub mod visualizer;
+
+pub use visualizer::{VisualizerConfig, VisualizerTuning};
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -22,6 +26,7 @@ pub struct Config {
     pub lastfm: LastfmConfig,
     pub playback: PlaybackConfig,
     pub lyrics: LyricsConfig,
+    pub visualizer: VisualizerConfig,
     /// The file this was loaded from (or would be), for saving settings changed in the app.
     #[serde(skip)]
     pub source: Option<PathBuf>,
@@ -331,6 +336,21 @@ impl Config {
         std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))
     }
 
+    /// Replaces the whole `[key]` table with `value` (removed if it serializes to nothing).
+    pub fn save_table<T: Serialize>(path: &Path, key: &str, value: &T) -> anyhow::Result<()> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let out = set_table(&text, key, value)?;
+        Self::parse(&out).context("the edited config would be invalid")?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))
+    }
+
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         Ok(toml::from_str(text)?)
     }
@@ -343,6 +363,18 @@ impl Config {
         std::fs::write(path, toml::to_string_pretty(&Self::default())?)?;
         Ok(())
     }
+}
+
+fn set_table<T: Serialize>(text: &str, key: &str, value: &T) -> anyhow::Result<String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().context("parsing config")?;
+    let fresh: toml_edit::DocumentMut = toml::to_string(value)?.parse().context("serializing")?;
+    let table = fresh.as_table().clone();
+    if table.is_empty() {
+        doc.remove(key);
+    } else {
+        doc[key] = toml_edit::Item::Table(table);
+    }
+    Ok(doc.to_string())
 }
 
 fn set_value(text: &str, dotted_key: &str, value: toml_edit::Value) -> anyhow::Result<String> {
@@ -385,6 +417,28 @@ font_size = 15 # big
         let order: toml_edit::Array = ["lrclib", "local"].into_iter().collect();
         let c = Config::parse(&set_value("", "lyrics.providers", order.into()).unwrap()).unwrap();
         assert_eq!(c.lyrics.providers, ["lrclib", "local"]);
+    }
+
+    #[test]
+    fn visualizer_tuning_and_presets_round_trip() {
+        let text = "# keep me\n[gui]\nfps = 60\n";
+        let mut v = VisualizerConfig::default();
+        // Defaults write nothing.
+        let out = set_table(text, "visualizer", &v).unwrap();
+        assert!(!out.contains("visualizer") && out.contains("# keep me"));
+        v.tuning.fov = 65.0;
+        v.tuning.speed = 0.45;
+        v.tuning.slack = 0.3;
+        v.presets.insert("Mine".into(), v.tuning);
+        let out = set_table(text, "visualizer", &v).unwrap();
+        // Readable numbers, not 0.30000001192092896.
+        assert!(out.contains("slack = 0.3\n"), "{out}");
+        let c = Config::parse(&out).unwrap();
+        assert_eq!(c.visualizer, v);
+        assert_eq!(c.gui.fps, 60);
+        // Back to defaults removes the table again.
+        let out = set_table(&out, "visualizer", &VisualizerConfig::default()).unwrap();
+        assert!(!out.contains("visualizer"), "{out}");
     }
 
     #[test]
