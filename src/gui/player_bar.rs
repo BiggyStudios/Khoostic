@@ -82,12 +82,20 @@ impl Gui {
         // Left: cover + title/artist (click to open the album).
         let art = Rect::new(r.x + 18.0, r.y + (r.h - 60.0) / 2.0, 60.0, 60.0);
         let info_w = (r.w * 0.26).min(300.0);
-        let tx = art.right() + 14.0;
+        let tx = art.right() + 18.0;
         match &snap.current {
             Some(e) => {
                 let seed = e.track.album.as_deref().unwrap_or(&e.track.title);
                 let beat = ui.anim.to(anim::id("np-bass"), a.bass, 18.0);
                 ui.c.glow(art, t.gradient(0.5).alpha(0.08 + 0.3 * beat), 10.0, 12.0);
+                // The ring settles away when paused instead of freezing.
+                let ring = self.cover_visualizer && snap.state == PlaybackState::Playing;
+                let ring = ui
+                    .anim
+                    .to(anim::id("np-ring"), ring as u8 as f32, anim::NORMAL);
+                if ring > 0.01 {
+                    cover_ring(ui, art, a, ring);
+                }
                 ui.cover(art, e.track.cover.as_ref(), CoverSize::Large, 8.0, seed);
                 // Title → album, artist → artist, like Spotify (underlined on hover).
                 let text_w = info_w - 34.0;
@@ -471,6 +479,73 @@ pub(crate) fn draw_slider(ui: &mut Ui, r: Rect, frac: f32, hot: f32, fill: Color
     }
 }
 
+/// Bars standing out from the cover's rounded edge, one per step around it, mirrored left to
+/// right: bass at the bottom, treble at the top. `amount` fades the whole ring in and out.
+fn cover_ring(ui: &mut Ui, art: Rect, a: &AnalysisFrame, amount: f32) {
+    const BARS: usize = 64;
+    /// The highest band shown; the top of the spectrum is nearly always quiet.
+    const TOP_BAND: f32 = 47.0;
+    const GAP: f32 = 3.0;
+    const MAX_LEN: f32 = 10.0;
+    let t = ui.theme.clone();
+    let (cx, cy) = art.center();
+    let half = art.w / 2.0 + GAP;
+    let radius = 8.0 + GAP;
+    let perimeter = edge_perimeter(half, radius);
+    for i in 0..BARS {
+        let u = i as f32 / BARS as f32;
+        // 0 at the bottom middle, 1 at the top middle, the same on both sides.
+        let d = (1.0 - 2.0 * u).abs();
+        let band = d * TOP_BAND;
+        let lo = band.floor() as usize;
+        let hi = (lo + 1).min(crate::audio::BANDS - 1);
+        let v = a.bands[lo] + (a.bands[hi] - a.bands[lo]) * band.fract();
+        let v = v.clamp(0.0, 1.0);
+        let ((x, y), (nx, ny)) = edge_point(half, radius, u * perimeter);
+        let len = 1.0 + MAX_LEN * v.powf(0.8) * amount;
+        let (x0, y0) = (cx + x, cy + y);
+        ui.c.line(
+            (x0, y0),
+            (x0 + nx * len, y0 + ny * len),
+            2.0,
+            t.gradient(d).alpha((0.3 + 0.7 * v) * amount),
+        );
+    }
+}
+
+fn edge_perimeter(half: f32, radius: f32) -> f32 {
+    8.0 * (half - radius) + std::f32::consts::TAU * radius
+}
+
+/// The point `s` along a rounded square (half-size `half`, corner `radius`, centered on the
+/// origin), walking clockwise from the top middle, and the outward normal there.
+fn edge_point(half: f32, radius: f32, s: f32) -> ((f32, f32), (f32, f32)) {
+    use std::f32::consts::FRAC_PI_2;
+    let e = half - radius;
+    let arc = FRAC_PI_2 * radius;
+    let side = 2.0 * e + arc;
+    // Start the walk at the top-left end of the top edge.
+    let s = (s + e).rem_euclid(4.0 * side);
+    let k = (s / side).floor().min(3.0);
+    let s = s - k * side;
+    // Work out the top side (edge, then the top-right corner) and rotate it into place.
+    let (p, n) = if s < 2.0 * e {
+        ((s - e, -half), (0.0, -1.0))
+    } else {
+        let ang = -FRAC_PI_2 + (s - 2.0 * e) / radius;
+        let (sin, cos) = ang.sin_cos();
+        ((e + radius * cos, -e + radius * sin), (cos, sin))
+    };
+    // A quarter turn clockwise on screen: (x, y) -> (-y, x).
+    let rot = |(x, y): (f32, f32)| match k as u8 {
+        0 => (x, y),
+        1 => (-y, x),
+        2 => (-x, -y),
+        _ => (y, -x),
+    };
+    (rot(p), rot(n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,5 +604,33 @@ mod tests {
         c.update(&snap(150.0, PlaybackState::Playing, 1), 0.0);
         c.update(&snap(0.0, PlaybackState::Playing, 2), 0.016);
         assert!(c.pos < 0.01);
+    }
+
+    #[test]
+    fn ring_walks_the_rounded_square() {
+        let (half, r) = (33.0, 11.0);
+        let total = edge_perimeter(half, r);
+        let close =
+            |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3;
+        // Top middle, right middle, bottom middle, left middle.
+        let cases = [
+            (0.0, (0.0, -half), (0.0, -1.0)),
+            (0.25, (half, 0.0), (1.0, 0.0)),
+            (0.5, (0.0, half), (0.0, 1.0)),
+            (0.75, (-half, 0.0), (-1.0, 0.0)),
+        ];
+        for (f, p, n) in cases {
+            let (gp, gn) = edge_point(half, r, f * total);
+            assert!(close(gp, p) && close(gn, n), "{f}: {gp:?} {gn:?}");
+        }
+        // Every point is on the shape: at most `half` out along each axis, and continuous.
+        let mut prev = edge_point(half, r, 0.0).0;
+        for i in 1..=400 {
+            let (p, _) = edge_point(half, r, i as f32 / 400.0 * total);
+            assert!(p.0.abs() <= half + 1e-3 && p.1.abs() <= half + 1e-3);
+            let step = ((p.0 - prev.0).powi(2) + (p.1 - prev.1).powi(2)).sqrt();
+            assert!(step <= total / 400.0 + 1e-2, "jump at {i}");
+            prev = p;
+        }
     }
 }

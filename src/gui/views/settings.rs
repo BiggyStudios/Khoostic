@@ -115,6 +115,25 @@ impl Gui {
             t.dim.alpha(0.8),
         );
         y += 34.0;
+        row_text(
+            ui,
+            y,
+            "Cover visualizer",
+            "Bars around the playing song's cover move to the music",
+        );
+        let on = self.cover_visualizer as usize;
+        if let Some(i) = ui.segmented(
+            anim::id("set-cover-vis"),
+            control_x,
+            y + 3.0,
+            &["Off", "On"],
+            on,
+        ) && i != on
+        {
+            self.cover_visualizer = i == 1;
+            self.save_bool("gui.cover_visualizer", i == 1);
+        }
+        y += 66.0;
 
         section(ui, &mut y, "LIBRARY");
         let dirs = if self.music_dirs.is_empty() {

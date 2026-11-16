@@ -215,6 +215,8 @@ pub struct Gui {
     /// Frame rates (focused, unfocused) the window loop paces to.
     pub fps: u32,
     pub background_fps: u32,
+    /// Draw the spectrum ring around the player bar's cover.
+    pub(crate) cover_visualizer: bool,
     pub(crate) config_path: Option<PathBuf>,
     /// Measured frames per second while animating.
     pub(crate) measured_fps: f32,
@@ -315,6 +317,7 @@ impl Gui {
             unmute_to: 0.8,
             fps: g.fps.clamp(10, 360),
             background_fps: g.background_fps.clamp(1, 360),
+            cover_visualizer: g.cover_visualizer,
             config_path: config.source.clone(),
             measured_fps: 0.0,
             kb_nav: false,

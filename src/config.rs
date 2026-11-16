@@ -223,6 +223,8 @@ pub struct GuiConfig {
     pub background_fps: u32,
     /// Corner radius of panels and rows, in logical pixels.
     pub corner_radius: f32,
+    /// Bars around the cover art in the player bar that move with the music.
+    pub cover_visualizer: bool,
     pub width: u32,
     pub height: u32,
     pub theme: GuiTheme,
@@ -238,6 +240,7 @@ impl Default for GuiConfig {
             fps: 120,
             background_fps: 30,
             corner_radius: 10.0,
+            cover_visualizer: true,
             width: 1200,
             height: 760,
             theme: GuiTheme::default(),
