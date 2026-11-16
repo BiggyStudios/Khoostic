@@ -1,11 +1,11 @@
-//! Text fields: editing, selection-free caret motion and the eased caret.
+//! Text fields: editing, selection, clipboard and the eased caret.
 
 use std::f32::consts::PI;
 
 use crate::gui::render::{Rect, Weight};
 use crate::gui::ui::anim;
 use crate::gui::ui::icons::{self, Icon};
-use crate::gui::ui::{Key, Ui};
+use crate::gui::ui::{Key, KeyPress, Ui};
 
 impl Ui<'_> {
     /// The search box. Returns true when its text changed.
@@ -29,81 +29,53 @@ impl Ui<'_> {
         let lead = if icon.is_some() { 36.0 } else { 16.0 };
         let inner = Rect::new(r.x + lead, r.y, r.w - lead - 10.0, r.h);
         let size = t.font_size - 1.0;
-        field.cursor = field.cursor.min(field.text.len());
+        field.clamp();
 
+        // Click places the caret, dragging selects, double-click selects a word.
+        let mx = self.input.mouse.map_or(0.0, |m| m.0) - inner.x + field.scroll_x;
         if self.input.pressed {
             let was = field.focused;
             field.focused = hover;
+            field.anchor = None;
+            field.dragging = false;
             if hover {
-                // Click places the caret at the nearest character boundary.
-                let mx = self.input.mouse.map_or(0.0, |m| m.0) - inner.x + field.scroll_x;
-                field.cursor = if field.secret {
-                    field.text.len()
-                } else {
-                    self.nearest_boundary(&field.text, mx, size)
-                };
+                field.cursor = self.boundary_at(field, mx, size);
                 field.idle = 0.0;
+                if self.input.double_click {
+                    let (a, b) = field.word_at(field.cursor);
+                    field.anchor = Some(a);
+                    field.cursor = b;
+                } else {
+                    field.anchor = Some(field.cursor);
+                    field.dragging = true;
+                }
                 if !was {
-                    let before = field.shown_before_cursor();
+                    let before = field.shown_upto(field.cursor);
                     field.caret_x = self.measure(&before, size, Weight::Regular);
                 }
+            }
+        } else if field.dragging {
+            if self.input.down {
+                let at = self.boundary_at(field, mx, size);
+                if at != field.cursor {
+                    field.cursor = at;
+                    field.idle = 0.0;
+                }
+            } else {
+                field.dragging = false;
             }
         }
 
         let mut changed = false;
         if field.focused {
             for k in &self.input.keys {
-                let before = (field.text.len(), field.cursor);
-                match k.key {
-                    Key::Char(c) if !k.ctrl => {
-                        field.text.insert(field.cursor, c);
-                        field.cursor += c.len_utf8();
-                        changed = true;
-                    }
-                    Key::Space => {
-                        field.text.insert(field.cursor, ' ');
-                        field.cursor += 1;
-                        changed = true;
-                    }
-                    Key::Paste => {
-                        let text = one_line(&self.input.paste);
-                        field.text.insert_str(field.cursor, &text);
-                        field.cursor += text.len();
-                        changed |= !text.is_empty();
-                    }
-                    Key::Backspace => {
-                        let from = if k.ctrl {
-                            word_left(&field.text, field.cursor)
-                        } else {
-                            prev_boundary(&field.text, field.cursor)
-                        };
-                        changed |= from < field.cursor;
-                        field.text.replace_range(from..field.cursor, "");
-                        field.cursor = from;
-                    }
-                    Key::Delete => {
-                        let to = if k.ctrl {
-                            word_right(&field.text, field.cursor)
-                        } else {
-                            next_boundary(&field.text, field.cursor)
-                        };
-                        changed |= to > field.cursor;
-                        field.text.replace_range(field.cursor..to, "");
-                    }
-                    Key::Left if k.ctrl => field.cursor = word_left(&field.text, field.cursor),
-                    Key::Right if k.ctrl => field.cursor = word_right(&field.text, field.cursor),
-                    Key::Left => field.cursor = prev_boundary(&field.text, field.cursor),
-                    Key::Right => field.cursor = next_boundary(&field.text, field.cursor),
-                    Key::Home => field.cursor = 0,
-                    Key::End => field.cursor = field.text.len(),
-                    Key::Escape | Key::Enter | Key::Down | Key::Tab => {
-                        // Keys after this one belong to the page, not the field.
-                        field.focused = false;
-                        break;
-                    }
-                    _ => {}
+                let before = (field.cursor, field.anchor);
+                match field.apply(k, &self.input.paste, &mut self.copy) {
+                    // Keys after this one belong to the page, not the field.
+                    None => break,
+                    Some(c) => changed |= c,
                 }
-                if (field.text.len(), field.cursor) != before {
+                if changed || (field.cursor, field.anchor) != before {
                     field.idle = 0.0;
                 }
             }
@@ -127,7 +99,7 @@ impl Ui<'_> {
         }
 
         // Caret and horizontal scroll both glide to where they should be.
-        let before = field.shown_before_cursor();
+        let before = field.shown_upto(field.cursor);
         let target = self.measure(&before, size, Weight::Regular);
         let k = 1.0 - (-28.0 * dt).exp();
         if (target - field.caret_x).abs() > 0.3 {
@@ -153,6 +125,21 @@ impl Ui<'_> {
         }
 
         self.c.push_clip(inner);
+        if let (true, Some((a, b))) = (f > 0.01, field.selection()) {
+            let xa = self.measure(&field.shown_upto(a), size, Weight::Regular);
+            let xb = self.measure(&field.shown_upto(b), size, Weight::Regular);
+            let sh = 22.0;
+            self.c.rect(
+                Rect::new(
+                    inner.x - field.scroll_x + xa,
+                    r.y + (r.h - sh) / 2.0,
+                    xb - xa,
+                    sh,
+                ),
+                t.accent.alpha(0.32 * f),
+                4.0,
+            );
+        }
         let ph = self
             .anim
             .to(id ^ 2, field.text.is_empty() as u8 as f32, anim::FAST);
@@ -168,7 +155,7 @@ impl Ui<'_> {
             );
         }
         if !field.text.is_empty() {
-            let shown = field.shown();
+            let shown = field.shown_upto(field.text.len());
             let y = self.top_for(&shown, r, size, Weight::Regular);
             self.c.text_at(
                 shown,
@@ -201,13 +188,12 @@ impl Ui<'_> {
         changed
     }
 
-    fn nearest_boundary(&mut self, text: &str, x: f32, size: f32) -> usize {
+    /// The character boundary nearest to `x` (field coordinates, scroll included).
+    fn boundary_at(&mut self, field: &TextField, x: f32, size: f32) -> usize {
         let mut best = (0, f32::MAX);
-        for (i, _) in text
-            .char_indices()
-            .chain(std::iter::once((text.len(), ' ')))
-        {
-            let d = (self.measure(&text[..i], size, Weight::Regular) - x).abs();
+        let ends = field.text.char_indices().map(|(i, _)| i);
+        for i in ends.chain(std::iter::once(field.text.len())) {
+            let d = (self.measure(&field.shown_upto(i), size, Weight::Regular) - x).abs();
             if d < best.1 {
                 best = (i, d);
             }
@@ -256,12 +242,16 @@ pub struct TextField {
     pub focused: bool,
     /// Caret position as a byte index into `text`.
     pub cursor: usize,
+    /// The other end of the selection (byte index); the selection runs to `cursor`.
+    anchor: Option<usize>,
+    /// A mouse drag that started in this field is selecting.
+    dragging: bool,
     /// Drawn caret x (eases toward the real position).
     caret_x: f32,
     scroll_x: f32,
     /// Seconds since the last edit or caret move (drives the blink).
     idle: f32,
-    /// Shown as dots (API secrets).
+    /// Shown as dots (API secrets), and never copied out.
     pub secret: bool,
 }
 
@@ -273,28 +263,144 @@ impl TextField {
         }
     }
 
-    /// What is drawn: the text, or a dot per character for secrets.
-    fn shown(&self) -> String {
-        if self.secret {
-            "•".repeat(self.text.chars().count())
-        } else {
-            self.text.clone()
+    pub fn set(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+        self.cursor = self.text.len();
+        self.anchor = None;
+        self.idle = 0.0;
+    }
+
+    /// Keeps the caret and selection inside the text (callers may edit `text` directly).
+    fn clamp(&mut self) {
+        let ok = |i: usize, s: &str| i <= s.len() && s.is_char_boundary(i);
+        if !ok(self.cursor, &self.text) {
+            self.cursor = self.text.len();
+        }
+        if !self.anchor.is_some_and(|a| ok(a, &self.text)) {
+            self.anchor = None;
         }
     }
 
-    fn shown_before_cursor(&self) -> String {
-        let head = &self.text[..self.cursor.min(self.text.len())];
+    /// The selected byte range, if anything is selected.
+    fn selection(&self) -> Option<(usize, usize)> {
+        let a = self.anchor.filter(|&a| a != self.cursor)?;
+        Some((a.min(self.cursor), a.max(self.cursor)))
+    }
+
+    /// Removes the selected text. Returns whether anything was removed.
+    fn delete_selection(&mut self) -> bool {
+        let sel = self.selection();
+        self.anchor = None;
+        let Some((a, b)) = sel else { return false };
+        self.text.replace_range(a..b, "");
+        self.cursor = a;
+        true
+    }
+
+    /// Replaces the selection (if any) with `s` at the caret.
+    fn insert(&mut self, s: &str) -> bool {
+        let removed = self.delete_selection();
+        self.text.insert_str(self.cursor, s);
+        self.cursor += s.len();
+        removed || !s.is_empty()
+    }
+
+    /// The word around byte `i` (the whole text for secrets, which have no visible words).
+    fn word_at(&self, i: usize) -> (usize, usize) {
+        if self.secret {
+            return (0, self.text.len());
+        }
+        let start = self.text[..i].rfind(' ').map_or(0, |j| j + 1);
+        let end = self.text[i..].find(' ').map_or(self.text.len(), |j| i + j);
+        (start, end)
+    }
+
+    /// Applies one key. Returns whether the text changed, or `None` when the key moves focus
+    /// away from the field. Ctrl+C / Ctrl+X put the selection in `copy`.
+    fn apply(&mut self, k: &KeyPress, paste: &str, copy: &mut Option<String>) -> Option<bool> {
+        let len = self.text.len();
+        let changed = match k.key {
+            Key::Char(c) if k.ctrl => match c.to_ascii_lowercase() {
+                'a' => {
+                    self.anchor = Some(0);
+                    self.cursor = len;
+                    false
+                }
+                'c' | 'x' => match self.selection() {
+                    Some((a, b)) if !self.secret => {
+                        *copy = Some(self.text[a..b].to_owned());
+                        c.eq_ignore_ascii_case(&'x') && self.delete_selection()
+                    }
+                    _ => false,
+                },
+                _ => false,
+            },
+            Key::Char(c) => self.insert(c.encode_utf8(&mut [0; 4])),
+            Key::Space => self.insert(" "),
+            Key::Paste => self.insert(&one_line(paste)),
+            Key::Backspace | Key::Delete if self.selection().is_some() => self.delete_selection(),
+            Key::Backspace => {
+                let from = if k.ctrl {
+                    word_left(&self.text, self.cursor)
+                } else {
+                    prev_boundary(&self.text, self.cursor)
+                };
+                self.text.replace_range(from..self.cursor, "");
+                let removed = from < self.cursor;
+                self.cursor = from;
+                self.anchor = None;
+                removed
+            }
+            Key::Delete => {
+                let to = if k.ctrl {
+                    word_right(&self.text, self.cursor)
+                } else {
+                    next_boundary(&self.text, self.cursor)
+                };
+                self.text.replace_range(self.cursor..to, "");
+                self.anchor = None;
+                to > self.cursor
+            }
+            Key::Left | Key::Right | Key::Home | Key::End => {
+                // Without Shift, Left/Right first collapse a selection to that side.
+                let sel = self.selection().filter(|_| !k.shift && !k.ctrl);
+                let to = match (k.key, sel) {
+                    (Key::Left, Some((a, _))) => a,
+                    (Key::Right, Some((_, b))) => b,
+                    (Key::Left, _) if k.ctrl => word_left(&self.text, self.cursor),
+                    (Key::Right, _) if k.ctrl => word_right(&self.text, self.cursor),
+                    (Key::Left, _) => prev_boundary(&self.text, self.cursor),
+                    (Key::Right, _) => next_boundary(&self.text, self.cursor),
+                    (Key::Home, _) => 0,
+                    _ => len,
+                };
+                if k.shift {
+                    let from = self.cursor;
+                    self.anchor.get_or_insert(from);
+                } else {
+                    self.anchor = None;
+                }
+                self.cursor = to;
+                false
+            }
+            Key::Escape | Key::Enter | Key::Down | Key::Tab => {
+                self.focused = false;
+                self.anchor = None;
+                return None;
+            }
+            _ => false,
+        };
+        Some(changed)
+    }
+
+    /// What is drawn for `text[..i]`: the text, or a dot per character for secrets.
+    fn shown_upto(&self, i: usize) -> String {
+        let head = &self.text[..i.min(self.text.len())];
         if self.secret {
             "•".repeat(head.chars().count())
         } else {
             head.to_owned()
         }
-    }
-
-    pub fn set(&mut self, text: impl Into<String>) {
-        self.text = text.into();
-        self.cursor = self.text.len();
-        self.idle = 0.0;
     }
 }
 
@@ -323,5 +429,82 @@ mod tests {
             "daft punk one more time"
         );
         assert_eq!(one_line("a\u{7}b\tc"), "ab c");
+    }
+
+    fn press(f: &mut TextField, key: Key, shift: bool, ctrl: bool) -> Option<String> {
+        let mut copy = None;
+        f.apply(&KeyPress { key, shift, ctrl }, "pasted", &mut copy);
+        copy
+    }
+
+    fn field(text: &str) -> TextField {
+        let mut f = TextField::default();
+        f.set(text);
+        f
+    }
+
+    #[test]
+    fn select_all_copy_cut_and_replace() {
+        let mut f = field("hello world");
+        press(&mut f, Key::Char('a'), false, true);
+        assert_eq!(
+            press(&mut f, Key::Char('c'), false, true).as_deref(),
+            Some("hello world")
+        );
+        assert_eq!(f.text, "hello world");
+        press(&mut f, Key::Char('x'), false, false);
+        assert_eq!((f.text.as_str(), f.cursor), ("x", 1));
+
+        let mut f = field("hello world");
+        press(&mut f, Key::Char('a'), false, true);
+        assert_eq!(
+            press(&mut f, Key::Char('x'), false, true).as_deref(),
+            Some("hello world")
+        );
+        assert_eq!(f.text, "");
+
+        let mut f = field("hello world");
+        press(&mut f, Key::Char('a'), false, true);
+        press(&mut f, Key::Paste, false, true);
+        assert_eq!(f.text, "pasted");
+    }
+
+    #[test]
+    fn shift_arrows_select() {
+        let mut f = field("hello world");
+        press(&mut f, Key::Left, true, true);
+        assert_eq!(
+            press(&mut f, Key::Char('c'), false, true).as_deref(),
+            Some("world")
+        );
+        press(&mut f, Key::Backspace, false, false);
+        assert_eq!(f.text, "hello ");
+        // Left without Shift collapses a selection to its start.
+        let mut f = field("abc");
+        press(&mut f, Key::Home, true, false);
+        press(&mut f, Key::Left, false, false);
+        assert_eq!((f.cursor, f.selection()), (0, None));
+        // Nothing selected: copy leaves the clipboard alone.
+        assert_eq!(press(&mut f, Key::Char('c'), false, true), None);
+    }
+
+    #[test]
+    fn secrets_are_never_copied() {
+        let mut f = TextField::secret();
+        f.set("api-key");
+        press(&mut f, Key::Char('a'), false, true);
+        assert_eq!(press(&mut f, Key::Char('c'), false, true), None);
+        assert_eq!(press(&mut f, Key::Char('x'), false, true), None);
+        assert_eq!(f.text, "api-key");
+        press(&mut f, Key::Backspace, false, false);
+        assert_eq!(f.text, "");
+    }
+
+    #[test]
+    fn double_click_word() {
+        let f = field("daft punk live");
+        assert_eq!(f.word_at(7), (5, 9));
+        assert_eq!(f.word_at(0), (0, 4));
+        assert_eq!(f.word_at(14), (10, 14));
     }
 }

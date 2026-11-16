@@ -195,6 +195,11 @@ impl WinitApp {
             &self.player,
         );
         self.animating = result.animating;
+        if let Some(text) = result.copy
+            && let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text))
+        {
+            tracing::debug!("clipboard: {e}");
+        }
         self.input.end_frame();
         if result.pointer != self.pointer {
             self.pointer = result.pointer;

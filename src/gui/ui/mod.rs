@@ -176,6 +176,8 @@ pub struct Ui<'a> {
     pub anim: Anims,
     /// Set when the pointer is over something clickable (the window shows a hand cursor).
     pub pointer: bool,
+    /// Text to put on the clipboard (Ctrl+C / Ctrl+X in a text field).
+    pub copy: Option<String>,
 }
 
 impl Ui<'_> {

@@ -120,6 +120,19 @@ fn main() -> anyhow::Result<()> {
             ..keys(&[Key::Char('b'), Key::Paste])
         },
     )?;
+    let select_all = KeyPress {
+        key: Key::Char('a'),
+        shift: false,
+        ctrl: true,
+    };
+    shot(
+        &mut h,
+        "search-selected",
+        &Input {
+            keys: vec![select_all],
+            ..Default::default()
+        },
+    )?;
     player.send(khoostic::player::PlayerCommand::Enqueue(
         library
             .all_tracks(khoostic::library::TrackOrder::Title)

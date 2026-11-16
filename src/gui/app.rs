@@ -196,6 +196,8 @@ pub struct FrameResult {
     pub animating: bool,
     /// The pointer is over something clickable.
     pub pointer: bool,
+    /// Text to put on the clipboard.
+    pub copy: Option<String>,
 }
 
 /// Mutable rendering services a frame needs.
@@ -385,6 +387,7 @@ impl Gui {
             theme: &theme,
             anim: anims,
             pointer: false,
+            copy: None,
         };
         // While a menu is open, the page underneath must not react to its clicks.
         let masked = Input {
@@ -471,6 +474,7 @@ impl Gui {
             scrolling |= l.step(dt);
         }
         let pointer = ui.pointer;
+        let copy = ui.copy.take();
         let animating = snap.state == PlaybackState::Playing
             || ui.anim.moving()
             || scrolling
@@ -488,7 +492,11 @@ impl Gui {
         if std::mem::take(&mut self.focus_search) {
             self.search.focused = true;
         }
-        FrameResult { animating, pointer }
+        FrameResult {
+            animating,
+            pointer,
+            copy,
+        }
     }
 
     /// A text field has the keyboard (global shortcuts are off).
