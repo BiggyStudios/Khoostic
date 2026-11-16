@@ -21,7 +21,8 @@ use librespot_protocol::metadata;
 use librespot_protocol::playlist4_external::SelectedListContent;
 use protobuf::{EnumOrUnknown, Message};
 
-use crate::model::{CoverRef, Track, TrackLocator};
+use crate::model::{CoverRef, LyricLine, Lyrics, Track, TrackLocator};
+use crate::spotify::ArtistSummary;
 
 #[derive(Debug, Clone)]
 pub struct Playlist {
@@ -48,6 +49,8 @@ pub struct AlbumSummary {
 pub struct SearchResults {
     pub tracks: Vec<Track>,
     pub albums: Vec<AlbumSummary>,
+    /// Artists of the matching songs, best match first (without pictures).
+    pub artists: Vec<ArtistSummary>,
     pub playlists: Vec<Playlist>,
 }
 
@@ -71,6 +74,11 @@ fn album_cover(album: &metadata::Album) -> Option<CoverRef> {
     } else {
         &album.cover_group.image
     };
+    pick_image(images)
+}
+
+/// The image closest to ~300px wide.
+pub(crate) fn pick_image(images: &[metadata::Image]) -> Option<CoverRef> {
     let width = |i: &metadata::Image| match (i.width(), i.size()) {
         (w, _) if w > 0 => w as u32,
         (_, metadata::image::Size::SMALL) => 64,
@@ -83,6 +91,11 @@ fn album_cover(album: &metadata::Album) -> Option<CoverRef> {
         .filter(|i| !i.file_id().is_empty())
         .min_by_key(|i| width(i).abs_diff(300))
         .map(|i| image_url(i.file_id()))
+}
+
+/// A raw Spotify gid as a base62 id.
+pub(crate) fn b62(gid: &[u8]) -> Option<String> {
+    SpotifyId::from_raw(gid).and_then(|id| id.to_base62()).ok()
 }
 
 fn to_track(id: String, t: &metadata::Track) -> Track {
@@ -105,29 +118,30 @@ fn to_track(id: String, t: &metadata::Track) -> Track {
         genre: None,
         duration: positive(t.duration()).map(|ms| Duration::from_millis(ms.into())),
         cover: album.and_then(album_cover),
+        artist_ids: t
+            .artist
+            .iter()
+            .map(|a| b62(a.gid()).unwrap_or_default())
+            .collect(),
+        album_id: album.and_then(|a| b62(a.gid())),
     }
 }
 
-/// Raw track metadata for `uris` (`spotify:track:…`) as `(id, track)`, in the same order.
-/// Anything that isn't a streamable Spotify track (local files inside playlists, episodes,
-/// removed tracks) is dropped.
-async fn track_metadata(
+/// Extended metadata of one `kind` for `uris`, parsed as `M`, by uri. Batched.
+pub(crate) async fn extended<M: Message>(
     session: &Session,
     uris: &[String],
-) -> anyhow::Result<Vec<(String, metadata::Track)>> {
-    let uris: Vec<&String> = uris
-        .iter()
-        .filter(|u| u.starts_with("spotify:track:"))
-        .collect();
-    let mut found: HashMap<String, metadata::Track> = HashMap::with_capacity(uris.len());
+    kind: ExtensionKind,
+) -> anyhow::Result<HashMap<String, M>> {
+    let mut found = HashMap::with_capacity(uris.len());
     for chunk in uris.chunks(METADATA_BATCH) {
         let req = BatchedEntityRequest {
             entity_request: chunk
                 .iter()
                 .map(|uri| EntityRequest {
-                    entity_uri: (*uri).clone(),
+                    entity_uri: uri.clone(),
                     query: vec![ExtensionQuery {
-                        extension_kind: EnumOrUnknown::new(ExtensionKind::TRACK_V4),
+                        extension_kind: EnumOrUnknown::new(kind),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -139,20 +153,37 @@ async fn track_metadata(
             .spclient()
             .get_extended_metadata(req)
             .await
-            .context("loading track details")?;
+            .context("loading details from Spotify")?;
         for data in res.extended_metadata.iter().flat_map(|a| &a.extension_data) {
             let Some(any) = data.extension_data.as_ref() else {
                 continue;
             };
-            if let Ok(t) = metadata::Track::parse_from_bytes(&any.value) {
-                found.insert(data.entity_uri.clone(), t);
+            if let Ok(m) = M::parse_from_bytes(&any.value) {
+                found.insert(data.entity_uri.clone(), m);
             }
         }
     }
+    Ok(found)
+}
+
+/// Raw track metadata for `uris` (`spotify:track:…`) as `(id, track)`, in the same order.
+/// Anything that isn't a streamable Spotify track (local files inside playlists, episodes,
+/// removed tracks) is dropped.
+async fn track_metadata(
+    session: &Session,
+    uris: &[String],
+) -> anyhow::Result<Vec<(String, metadata::Track)>> {
+    let uris: Vec<String> = uris
+        .iter()
+        .filter(|u| u.starts_with("spotify:track:"))
+        .cloned()
+        .collect();
+    let mut found: HashMap<String, metadata::Track> =
+        extended(session, &uris, ExtensionKind::TRACK_V4).await?;
     Ok(uris
         .into_iter()
         .filter_map(|u| {
-            let t = found.remove(u)?;
+            let t = found.remove(&u)?;
             Some((u.strip_prefix("spotify:track:")?.to_owned(), t))
         })
         .collect())
@@ -317,9 +348,10 @@ pub async fn search(session: &Session, query: &str, limit: usize) -> anyhow::Res
         return Ok(SearchResults::default());
     }
     let uris = context_uris(session, &format!("spotify:search:{q}"), limit).await?;
-    let found = track_metadata(session, &uris).await?;
+    let found = cached_track_metadata(session, &uris).await?;
     Ok(SearchResults {
         albums: albums_of(&found),
+        artists: artists_of(&found, query),
         tracks: found
             .iter()
             .map(|(id, t)| to_track(id.clone(), t))
@@ -328,31 +360,153 @@ pub async fn search(session: &Session, query: &str, limit: usize) -> anyhow::Res
     })
 }
 
+/// Track metadata seen recently, by uri. Typing a query one letter at a time finds mostly the
+/// same songs, so this saves most of the second request.
+static TRACK_CACHE: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, metadata::Track>>> =
+    std::sync::LazyLock::new(Default::default);
+const TRACK_CACHE_MAX: usize = 4000;
+
+/// [`track_metadata`] through [`TRACK_CACHE`].
+async fn cached_track_metadata(
+    session: &Session,
+    uris: &[String],
+) -> anyhow::Result<Vec<(String, metadata::Track)>> {
+    let missing: Vec<String> = {
+        let cache = TRACK_CACHE.lock();
+        uris.iter()
+            .filter(|u| !cache.contains_key(*u))
+            .cloned()
+            .collect()
+    };
+    let fetched = track_metadata(session, &missing).await?;
+    let mut cache = TRACK_CACHE.lock();
+    if cache.len() + fetched.len() > TRACK_CACHE_MAX {
+        cache.clear();
+    }
+    for (id, t) in fetched {
+        cache.insert(format!("spotify:track:{id}"), t);
+    }
+    Ok(uris
+        .iter()
+        .filter_map(|u| {
+            let t = cache.get(u)?.clone();
+            Some((u.strip_prefix("spotify:track:")?.to_owned(), t))
+        })
+        .collect())
+}
+
+/// The artists of `tracks`, best match first: names matching the query, then by how many of
+/// the songs they're on. Pictures come separately ([`crate::spotify::Spotify::artist_summaries`]).
+fn artists_of(tracks: &[(String, metadata::Track)], query: &str) -> Vec<ArtistSummary> {
+    let q = crate::model::matching::normalize(query);
+    let mut seen: HashMap<String, (usize, usize, String)> = HashMap::new();
+    for (i, a) in tracks.iter().flat_map(|(_, t)| &t.artist).enumerate() {
+        let Some(id) = b62(a.gid()) else { continue };
+        let e = seen.entry(id).or_insert((0, i, a.name().to_owned()));
+        e.0 += 1;
+    }
+    let mut out: Vec<(String, (usize, usize, String))> = seen.into_iter().collect();
+    let rank = |name: &str| {
+        let n = crate::model::matching::normalize(name);
+        if n == q {
+            0
+        } else if !q.is_empty() && (n.contains(&q) || q.contains(&n)) {
+            1
+        } else {
+            2
+        }
+    };
+    out.sort_by(|(_, a), (_, b)| {
+        rank(&a.2)
+            .cmp(&rank(&b.2))
+            .then(b.0.cmp(&a.0))
+            .then(a.1.cmp(&b.1))
+    });
+    out.into_iter()
+        .map(|(id, (_, _, name))| ArtistSummary {
+            id,
+            name,
+            image: None,
+        })
+        .collect()
+}
+
 /// Distinct albums of `tracks`, in order of first appearance.
 fn albums_of(tracks: &[(String, metadata::Track)]) -> Vec<AlbumSummary> {
     let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for album in tracks.iter().filter_map(|(_, t)| t.album.as_ref()) {
-        let Ok(id) = SpotifyId::from_raw(album.gid()).and_then(|id| id.to_base62()) else {
-            continue;
-        };
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        out.push(AlbumSummary {
-            id,
-            name: album.name().to_owned(),
-            artist: album.artist.first().map(|a| a.name().to_owned()),
-            year: album
-                .date
-                .as_ref()
-                .and_then(|d| u16::try_from(d.year()).ok())
-                .filter(|&y| y > 0),
-            tracks: 0,
-            cover: album_cover(album),
-        });
+    tracks
+        .iter()
+        .filter_map(|(_, t)| album_summary(t.album.as_ref()?))
+        .filter(|a| seen.insert(a.id.clone()))
+        .collect()
+}
+
+/// An album as a card (search results, discographies).
+pub(crate) fn album_summary(album: &metadata::Album) -> Option<AlbumSummary> {
+    Some(AlbumSummary {
+        id: b62(album.gid())?,
+        name: album.name().to_owned(),
+        artist: album.artist.first().map(|a| a.name().to_owned()),
+        year: album
+            .date
+            .as_ref()
+            .and_then(|d| u16::try_from(d.year()).ok())
+            .filter(|&y| y > 0),
+        tracks: 0,
+        cover: album_cover(album),
+    })
+}
+
+/// Spotify's lyrics for a track (licensed from Musixmatch and others), when it has them.
+pub async fn lyrics(session: &Session, track_id: &str) -> anyhow::Result<Option<Lyrics>> {
+    let mut h = HeaderMap::new();
+    h.insert("app-platform", HeaderValue::from_static("WebPlayer"));
+    let res = session
+        .spclient()
+        .request_as_json(
+            &Method::GET,
+            &format!(
+                "/color-lyrics/v2/track/{track_id}?format=json&vocalRemoval=false&market=from_token"
+            ),
+            Some(h),
+            None,
+        )
+        .await;
+    let body = match res {
+        Ok(b) => b,
+        Err(e) if e.kind == librespot_core::error::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context("loading lyrics from Spotify"),
+    };
+    if body.is_empty() {
+        return Ok(None);
     }
-    out
+    let v: serde_json::Value = serde_json::from_slice(&body)?;
+    Ok(parse_lyrics(&v["lyrics"]))
+}
+
+fn parse_lyrics(l: &serde_json::Value) -> Option<Lyrics> {
+    let synced = l["syncType"].as_str() == Some("LINE_SYNCED");
+    let lines: Vec<LyricLine> = l["lines"]
+        .as_array()?
+        .iter()
+        .map(|line| LyricLine {
+            start: synced
+                .then(|| line["startTimeMs"].as_str()?.parse().ok())
+                .flatten()
+                .map(Duration::from_millis),
+            text: line["words"].as_str().unwrap_or_default().to_owned(),
+        })
+        .collect();
+    let provider = l["providerDisplayName"].as_str().filter(|p| !p.is_empty());
+    let lyrics = Lyrics {
+        synced: synced && lines.iter().all(|l| l.start.is_some()),
+        lines,
+        source: match provider {
+            Some(p) => format!("Spotify ({p})"),
+            None => "Spotify".into(),
+        },
+    };
+    (!lyrics.is_empty()).then_some(lyrics)
 }
 
 fn json_headers() -> HeaderMap {

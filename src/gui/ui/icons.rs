@@ -37,6 +37,24 @@ pub enum Icon {
     Radio,
     /// Autoplay (endless): an infinity sign.
     Autoplay,
+    /// Window controls.
+    Minimize,
+    Maximize,
+    /// Two overlapping squares (un-maximize).
+    Restore,
+    /// A solid heart (liked).
+    HeartFilled,
+    Check,
+    /// Lyrics: a microphone.
+    Mic,
+    /// Your Library: books on a shelf.
+    Library,
+    /// Collapse / expand the library panel.
+    PanelLeft,
+    /// A filled badge with a check (verified artist).
+    Verified,
+    /// Three dots in a row (more options).
+    More,
 }
 
 struct Pen<'a> {
@@ -250,6 +268,81 @@ pub fn draw(c: &mut Canvas, icon: Icon, r: Rect, color: Color) {
             let s = std::f32::consts::FRAC_1_SQRT_2 * 4.2;
             p.line((7.5 + s, 12.0 - s), (16.5 - s, 12.0 + s));
             p.line((7.5 + s, 12.0 + s), (16.5 - s, 12.0 - s));
+        }
+        Icon::Minimize => p.line((6.0, 12.0), (18.0, 12.0)),
+        Icon::Maximize => {
+            let w = p.w;
+            p.c.outline(
+                Rect::new(r.x + 6.0 * k, r.y + 6.0 * k, 12.0 * k, 12.0 * k),
+                color,
+                1.0 * k,
+                w,
+            );
+        }
+        Icon::Restore => {
+            let w = p.w;
+            p.c.outline(
+                Rect::new(r.x + 5.5 * k, r.y + 8.5 * k, 10.0 * k, 10.0 * k),
+                color,
+                1.0 * k,
+                w,
+            );
+            p.poly(&[
+                (8.5, 8.5),
+                (8.5, 5.5),
+                (18.5, 5.5),
+                (18.5, 15.5),
+                (15.5, 15.5),
+            ]);
+        }
+        Icon::HeartFilled => {
+            p.dot(8.4, 9.6, 4.6);
+            p.dot(15.6, 9.6, 4.6);
+            // The point: a fan of thick strokes from the tip up to the lobes.
+            p.w = 2.6 * k;
+            for i in 0..=10 {
+                let x = 4.6 + i as f32 * 1.48;
+                p.line((x, 11.0), (12.0, 19.2));
+            }
+        }
+        Icon::Check => p.poly(&[(5.0, 12.5), (10.0, 17.5), (19.0, 7.0)]),
+        Icon::Mic => {
+            let w = p.w;
+            p.c.outline(
+                Rect::new(r.x + 9.0 * k, r.y + 3.0 * k, 6.0 * k, 11.0 * k),
+                color,
+                3.0 * k,
+                w,
+            );
+            p.arc(12.0, 10.5, 6.0, 0.1 * PI, 0.9 * PI);
+            p.line((12.0, 16.5), (12.0, 20.5));
+            p.line((8.5, 20.5), (15.5, 20.5));
+        }
+        Icon::Library => {
+            p.line((5.0, 4.5), (5.0, 19.5));
+            p.line((10.0, 4.5), (10.0, 19.5));
+            p.line((14.0, 5.5), (19.0, 19.0));
+        }
+        Icon::PanelLeft => {
+            let w = p.w;
+            p.c.outline(
+                Rect::new(r.x + 3.5 * k, r.y + 5.0 * k, 17.0 * k, 14.0 * k),
+                color,
+                2.5 * k,
+                w,
+            );
+            p.line((9.5, 5.0), (9.5, 19.0));
+        }
+        Icon::Verified => {
+            p.dot(12.0, 12.0, 9.5);
+            p.color = Color::WHITE;
+            p.w *= 1.15;
+            p.poly(&[(7.5, 12.3), (10.8, 15.5), (16.5, 9.0)]);
+        }
+        Icon::More => {
+            for x in [5.5, 12.0, 18.5] {
+                p.dot(x, 12.0, 1.7);
+            }
         }
         Icon::Spotify => {
             p.dot(12.0, 12.0, 10.0);

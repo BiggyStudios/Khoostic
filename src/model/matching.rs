@@ -60,6 +60,54 @@ fn is_noise(s: &str) -> bool {
     WORDS.iter().any(|w| s.starts_with(w) || s.contains(w))
 }
 
+/// Lowercase with accents folded (é → e, ß → ss), punctuation dropped and spaces collapsed:
+/// for comparing what someone typed with names ("beyonce" finds "Beyoncé").
+pub fn normalize(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut space = false;
+    for c in s.chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            if space && !out.is_empty() {
+                out.push(' ');
+            }
+            space = false;
+            match fold(c) {
+                Some(f) => out.push_str(f),
+                None => out.push(c),
+            }
+        } else if c.is_whitespace() || matches!(c, '-' | '_' | '/' | '&' | ',' | '.') {
+            space = true;
+        }
+    }
+    out
+}
+
+/// The plain Latin letters for an accented one.
+fn fold(c: char) -> Option<&'static str> {
+    Some(match c {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => "a",
+        'æ' => "ae",
+        'ç' | 'ć' | 'č' => "c",
+        'ď' | 'đ' | 'ð' => "d",
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => "e",
+        'ğ' => "g",
+        'ì' | 'í' | 'î' | 'ï' | 'ī' | 'į' | 'ı' => "i",
+        'ł' | 'ľ' | 'ĺ' => "l",
+        'ñ' | 'ń' | 'ň' => "n",
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => "o",
+        'œ' => "oe",
+        'ř' | 'ŕ' => "r",
+        'ś' | 'š' | 'ş' | 'ș' => "s",
+        'ß' => "ss",
+        'ť' | 'ţ' | 'ț' => "t",
+        'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' | 'ų' => "u",
+        'ý' | 'ÿ' => "y",
+        'ź' | 'ż' | 'ž' => "z",
+        'þ' => "th",
+        _ => return None,
+    })
+}
+
 /// A comparable form of an artist name (the first credited artist only).
 pub fn artist_key(artist: &str) -> String {
     let lower = artist.to_lowercase();
@@ -132,5 +180,14 @@ mod tests {
             "Sweater Weather - Remastered"
         ));
         assert!(!is_song(&t, "Someone Else", "Sweater Weather"));
+    }
+
+    #[test]
+    fn normalize_folds_case_accents_and_punctuation() {
+        assert_eq!(normalize("Beyoncé"), "beyonce");
+        assert_eq!(normalize("  AC/DC  "), "ac dc");
+        assert_eq!(normalize("Sigur Rós – Hoppípolla"), "sigur ros hoppipolla");
+        assert_eq!(normalize("Straße"), "strasse");
+        assert_eq!(normalize("米津玄師"), "米津玄師");
     }
 }

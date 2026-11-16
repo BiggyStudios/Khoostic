@@ -9,11 +9,11 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
-use winit::window::{CursorIcon, Window, WindowId};
+use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 
 use crate::config::Config;
 use crate::gui::app;
-use crate::gui::app::Gui;
+use crate::gui::app::{Gui, WindowCmd};
 use crate::gui::render::gpu::{Gpu, WindowSurface};
 use crate::gui::render::{Canvas, Renderer};
 use crate::gui::ui::{Input, Key, KeyPress};
@@ -26,6 +26,9 @@ const IDLE_REDRAW: Duration = Duration::from_millis(500);
 /// Wake-up interval while minimized (no drawing).
 const HIDDEN_TICK: Duration = Duration::from_secs(1);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// How close to the window's edge (logical pixels) the mouse resizes it instead of clicking.
+const RESIZE_BORDER: f64 = 6.0;
 
 /// Pixels scrolled per wheel notch.
 const WHEEL_STEP: f32 = 84.0;
@@ -56,7 +59,10 @@ pub fn run(app: Services, config: &Config, launch: Launch) -> anyhow::Result<()>
         dirty: true,
         last_frame: Instant::now(),
         frame_due: Instant::now(),
+        cursor: CursorIcon::Default,
         pointer: false,
+        edge: None,
+        close: false,
         frames: 0,
         stats_since: Instant::now(),
     };
@@ -97,8 +103,14 @@ struct WinitApp {
     /// When the next animation frame is due. Advanced by fixed steps so wake-up latency
     /// doesn't accumulate into a lower frame rate.
     frame_due: Instant,
-    /// The hand cursor is showing.
+    /// The cursor shown now.
+    cursor: CursorIcon,
+    /// The page wants the hand cursor.
     pointer: bool,
+    /// The mouse is on a window edge: pressing resizes in this direction.
+    edge: Option<ResizeDirection>,
+    /// The close button was clicked.
+    close: bool,
     /// Frames drawn since `stats_since` (debug log of the real frame rate).
     frames: u32,
     stats_since: Instant,
@@ -185,6 +197,7 @@ impl WinitApp {
         };
         let size = (ws.surface.config.width, ws.surface.config.height);
         let mut canvas = Canvas::new(size, scale, self.gui.theme.background);
+        self.gui.maximized = ws.window.is_maximized();
         let result = self.gui.frame(
             &mut canvas,
             app::Gfx {
@@ -201,14 +214,24 @@ impl WinitApp {
             tracing::debug!("clipboard: {e}");
         }
         self.input.end_frame();
-        if result.pointer != self.pointer {
-            self.pointer = result.pointer;
-            ws.window.set_cursor(if result.pointer {
-                CursorIcon::Pointer
-            } else {
-                CursorIcon::Default
-            });
+        match result.window {
+            Some(WindowCmd::Minimize) => ws.window.set_minimized(true),
+            Some(WindowCmd::ToggleMaximize) => ws.window.set_maximized(!ws.window.is_maximized()),
+            Some(WindowCmd::Close) => self.close = true,
+            Some(WindowCmd::Drag) => {
+                // The OS runs the move loop and swallows the button release.
+                if let Err(e) = ws.window.drag_window() {
+                    tracing::debug!("drag_window: {e}");
+                }
+                self.input.down = false;
+            }
+            None => {}
         }
+        self.pointer = result.pointer;
+        self.update_cursor();
+        let Some(ws) = self.window.as_mut() else {
+            return;
+        };
 
         let frame = match ws.surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
@@ -245,6 +268,45 @@ impl WinitApp {
         }
         ws.window.pre_present_notify();
         ws.renderer.gpu.queue.present(frame);
+    }
+
+    /// The resize arrows on the window's edges, else the hand over clickable things.
+    fn update_cursor(&mut self) {
+        let want = match self.edge {
+            Some(d) => resize_cursor(d),
+            None if self.pointer => CursorIcon::Pointer,
+            None => CursorIcon::Default,
+        };
+        if want != self.cursor
+            && let Some(ws) = &self.window
+        {
+            ws.window.set_cursor(want);
+            self.cursor = want;
+        }
+    }
+
+    /// Which edge (or corner) of the window the mouse at physical `(x, y)` is on.
+    fn edge_at(&self, x: f64, y: f64) -> Option<ResizeDirection> {
+        let ws = self.window.as_ref()?;
+        if ws.window.is_maximized() {
+            return None;
+        }
+        let size = ws.window.inner_size();
+        let b = RESIZE_BORDER * ws.window.scale_factor();
+        let (w, h) = (size.width as f64, size.height as f64);
+        let (left, right, top, bottom) = (x < b, x > w - b, y < b, y > h - b);
+        use ResizeDirection as D;
+        Some(match (left, right, top, bottom) {
+            (true, _, true, _) => D::NorthWest,
+            (_, true, true, _) => D::NorthEast,
+            (true, _, _, true) => D::SouthWest,
+            (_, true, _, true) => D::SouthEast,
+            (true, ..) => D::West,
+            (_, true, ..) => D::East,
+            (_, _, true, _) => D::North,
+            (.., true) => D::South,
+            _ => return None,
+        })
     }
 
     fn key(&mut self, key: &WKey) {
@@ -312,7 +374,14 @@ impl ApplicationHandler for WinitApp {
             .with_inner_size(LogicalSize::new(g.width.max(640), g.height.max(420)))
             .with_min_inner_size(LogicalSize::new(720, 480))
             .with_theme(Some(winit::window::Theme::Dark))
+            .with_decorations(false)
             .with_visible(false);
+        // Keeps the drop shadow (and snapping) a decorated window has.
+        #[cfg(windows)]
+        let attrs = {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs.with_undecorated_shadow(true)
+        };
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -367,10 +436,25 @@ impl ApplicationHandler for WinitApp {
             WindowEvent::Focused(f) => self.focused = f,
             WindowEvent::Occluded(o) => self.occluded = o,
             WindowEvent::CursorMoved { position, .. } => {
+                let edge = self.edge_at(position.x, position.y);
+                if edge != self.edge {
+                    self.edge = edge;
+                    self.update_cursor();
+                }
                 self.input.mouse = Some((position.x as f32 / scale, position.y as f32 / scale));
             }
-            WindowEvent::CursorLeft { .. } => self.input.mouse = None,
+            WindowEvent::CursorLeft { .. } => {
+                self.input.mouse = None;
+                self.edge = None;
+            }
             WindowEvent::MouseInput { state, button, .. } => match (button, state) {
+                (MouseButton::Left, ElementState::Pressed) if self.edge.is_some() => {
+                    if let (Some(ws), Some(dir)) = (&self.window, self.edge)
+                        && let Err(e) = ws.window.drag_resize_window(dir)
+                    {
+                        tracing::debug!("drag_resize_window: {e}");
+                    }
+                }
                 (MouseButton::Left, ElementState::Pressed) => {
                     let pos = self.input.mouse.unwrap_or_default();
                     let now = Instant::now();
@@ -412,6 +496,9 @@ impl ApplicationHandler for WinitApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.close {
+            return event_loop.exit();
+        }
         if self.window.is_none() {
             return;
         }
@@ -435,5 +522,15 @@ impl ApplicationHandler for WinitApp {
         } else {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next));
         }
+    }
+}
+
+fn resize_cursor(d: ResizeDirection) -> CursorIcon {
+    use ResizeDirection as D;
+    match d {
+        D::East | D::West => CursorIcon::EwResize,
+        D::North | D::South => CursorIcon::NsResize,
+        D::NorthWest | D::SouthEast => CursorIcon::NwseResize,
+        D::NorthEast | D::SouthWest => CursorIcon::NeswResize,
     }
 }

@@ -21,6 +21,7 @@ pub struct Config {
     pub spotify: SpotifyConfig,
     pub lastfm: LastfmConfig,
     pub playback: PlaybackConfig,
+    pub lyrics: LyricsConfig,
     /// The file this was loaded from (or would be), for saving settings changed in the app.
     #[serde(skip)]
     pub source: Option<PathBuf>,
@@ -171,6 +172,23 @@ impl Default for LastfmConfig {
             api_key: String::new(),
             api_secret: String::new(),
             scrobble: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct LyricsConfig {
+    /// Where to look for lyrics, in order: "local" (.lrc files next to songs, lyrics in their
+    /// tags), "spotify" (needs Spotify connected; also used for local songs it can match) and
+    /// "lrclib" (lrclib.net, free and public).
+    pub providers: Vec<String>,
+}
+
+impl Default for LyricsConfig {
+    fn default() -> Self {
+        Self {
+            providers: vec!["local".into(), "spotify".into(), "lrclib".into()],
         }
     }
 }

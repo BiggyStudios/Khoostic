@@ -1,33 +1,25 @@
-//! The top bar: logo, back/forward, home, the search box and settings.
+//! The top bar, which is also the window's title bar: back/forward, home, the search box,
+//! settings and account, and the window buttons. Empty space drags the window; a double click
+//! there maximizes it.
 
-use crate::gui::app::{Gui, View};
-use crate::gui::render::{Rect, Weight};
-use crate::gui::ui::icons::Icon;
+use crate::gui::app::{Gui, View, WindowCmd};
+use crate::gui::render::{Color, Rect, Weight};
+use crate::gui::ui::icons::{self, Icon};
 use crate::gui::ui::{Ui, anim};
 use crate::spotify::Status;
 
 /// Width the search box grows to on wide windows.
 const SEARCH_W: f32 = 480.0;
 const SEARCH_H: f32 = 44.0;
+/// One window button (minimize, maximize, close), flush with the window's top-right corner.
+const CAPTION_W: f32 = 46.0;
+const CAPTION_H: f32 = 36.0;
 
 impl Gui {
-    /// `r` is the whole bar; `content_x` is where the main panel starts (back/forward line up
-    /// with it).
-    pub(crate) fn top_bar(&mut self, ui: &mut Ui, r: Rect, content_x: f32) {
+    /// `r` is the whole bar.
+    pub(crate) fn top_bar(&mut self, ui: &mut Ui, r: Rect) {
         let t = ui.theme.clone();
         let cy = r.y + r.h / 2.0;
-
-        // Logo.
-        ui.c.circle(r.x + 28.0, cy, 4.5, t.accent);
-        ui.label(
-            "khoostic",
-            r.x + 42.0,
-            Rect::new(r.x, r.y, 200.0, r.h),
-            160.0,
-            18.0,
-            Weight::Bold,
-            t.fg,
-        );
 
         // Back / forward, dimmed when there's nowhere to go.
         let nav = [
@@ -35,7 +27,7 @@ impl Gui {
             (Icon::Forward, !self.forward.is_empty(), "top-fwd"),
         ];
         for (i, (icon, enabled, key)) in nav.into_iter().enumerate() {
-            let x = content_x + 18.0 + i as f32 * 40.0;
+            let x = r.x + 28.0 + i as f32 * 40.0;
             ui.c.circle(x, cy, 16.0, t.surface);
             let color = if enabled {
                 t.fg.alpha(0.85)
@@ -52,13 +44,50 @@ impl Gui {
             }
         }
 
+        // Window buttons, then settings and the account to their left.
+        let captions = 3.0 * CAPTION_W;
+        self.caption_buttons(
+            ui,
+            Rect::new(r.right() - captions, r.y, captions, CAPTION_H),
+        );
+        let mut x = r.right() - captions - 26.0;
+        let on_settings = self.view == View::Settings;
+        let gc = if on_settings { t.accent } else { t.dim };
+        if ui.icon_button(
+            anim::id("top-settings"),
+            Icon::Settings,
+            (x, cy),
+            19.0,
+            gc,
+            t.fg,
+        ) {
+            if on_settings {
+                self.back();
+            } else {
+                self.navigate(View::Settings);
+            }
+        }
+        if let Some(Status::Connected(a)) = self.spotify.as_ref().map(|s| s.status()) {
+            x -= 44.0;
+            let disc = Rect::new(x - 16.0, cy - 16.0, 32.0, 32.0);
+            let h = ui.hover_t(anim::id("top-account"), disc);
+            ui.c.circle(x, cy, 16.0 + 1.5 * h, t.surface_hover);
+            ui.c.circle(x, cy, 13.0, t.accent.alpha(0.9));
+            let initial: String = a.name.chars().take(1).collect::<String>().to_uppercase();
+            ui.label_center(&initial, disc, 13.0, Weight::Bold, t.background);
+            ui.pointer |= ui.hovered(disc);
+            if ui.clicked(disc) {
+                self.navigate(View::Settings);
+            }
+        }
+
         // Home + search, centered on the window, but never over the buttons on either side.
-        let left = content_x + 140.0; // past back/forward and the home button
-        let right = r.right() - 110.0; // before the account and settings buttons
+        let left = r.x + 140.0; // past back/forward and the home button
+        let right = x - 40.0;
         let sw = SEARCH_W.min(right - left).max(120.0);
         let sx = (r.x + (r.w - sw) / 2.0 + 28.0).clamp(left, (right - sw).max(left));
         let home = (sx - 34.0, cy);
-        let on_home = self.view == View::Albums;
+        let on_home = self.view.section() == View::Albums;
         ui.c.circle(home.0, home.1, SEARCH_H / 2.0, t.surface);
         let hc = if on_home { t.fg } else { t.dim };
         if ui.icon_button(anim::id("top-home"), Icon::Home, home, 20.0, hc, t.fg) {
@@ -92,34 +121,61 @@ impl Gui {
             self.search_changed(false);
         }
 
-        // Settings, and the Spotify account as an initial in a circle.
-        let mut x = r.right() - 30.0;
-        let on_settings = self.view == View::Settings;
-        let gc = if on_settings { t.accent } else { t.dim };
-        if ui.icon_button(
-            anim::id("top-settings"),
-            Icon::Settings,
-            (x, cy),
-            19.0,
-            gc,
-            t.fg,
-        ) {
-            if on_settings {
-                self.back();
+        // Anything not taken by a control moves the window.
+        if ui.input.pressed && ui.hovered(r) && !ui.pointer {
+            self.window_cmd = Some(if ui.input.double_click {
+                WindowCmd::ToggleMaximize
             } else {
-                self.navigate(View::Settings);
-            }
+                WindowCmd::Drag
+            });
         }
-        if let Some(Status::Connected(a)) = self.spotify.as_ref().map(|s| s.status()) {
-            x -= 44.0;
-            let disc = Rect::new(x - 16.0, cy - 16.0, 32.0, 32.0);
-            let h = ui.hover_t(anim::id("top-account"), disc);
-            ui.c.circle(x, cy, 16.0 + 1.5 * h, t.surface_hover);
-            ui.c.circle(x, cy, 13.0, t.accent.alpha(0.9));
-            let initial: String = a.name.chars().take(1).collect::<String>().to_uppercase();
-            ui.label_center(&initial, disc, 13.0, Weight::Bold, t.background);
-            if ui.clicked(disc) {
-                self.navigate(View::Settings);
+    }
+
+    /// Minimize, maximize/restore and close, Windows style: flat, with close turning red.
+    fn caption_buttons(&mut self, ui: &mut Ui, r: Rect) {
+        let t = ui.theme.clone();
+        let red = Color::rgba8(196, 43, 28, 255);
+        let buttons = [
+            (Icon::Minimize, WindowCmd::Minimize),
+            (
+                if self.maximized {
+                    Icon::Restore
+                } else {
+                    Icon::Maximize
+                },
+                WindowCmd::ToggleMaximize,
+            ),
+            (Icon::Close, WindowCmd::Close),
+        ];
+        for (i, (icon, cmd)) in buttons.into_iter().enumerate() {
+            let b = Rect::new(r.x + i as f32 * CAPTION_W, r.y, CAPTION_W, r.h);
+            let h = ui.hover_t(anim::id(("caption", i)), b);
+            let close = cmd == WindowCmd::Close;
+            if h > 0.01 {
+                let fill = if close {
+                    red.alpha(h)
+                } else {
+                    t.wash(0.08 * h)
+                };
+                ui.c.rect(b, fill, 0.0);
+            }
+            let ink = if close {
+                t.dim.lerp(Color::WHITE, h)
+            } else {
+                t.dim.lerp(t.fg, h)
+            };
+            let s = 15.0;
+            icons::draw(
+                ui.c,
+                icon,
+                Rect::new(b.x + (b.w - s) / 2.0, b.y + (b.h - s) / 2.0, s, s),
+                ink,
+            );
+            if ui.hovered(b) {
+                ui.pointer = true;
+            }
+            if ui.clicked(b) {
+                self.window_cmd = Some(cmd);
             }
         }
     }

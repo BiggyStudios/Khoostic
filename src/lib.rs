@@ -6,7 +6,8 @@
 //!      ▲                     │  ▲            └──► analysis (visualizers)
 //!      └──── snapshots ──────┘  └── sources: local files (library), Spotify
 //!
-//!  services: library index, Spotify, Last.fm scrobbling, discovery (radio, autoplay)
+//!  services: library index, Spotify, Last.fm scrobbling, MusicBrainz genres, discovery
+//!            (radio, autoplay), lyrics
 //! ```
 //!
 //! Modules are layered: each one only uses modules from the groups listed before it.
@@ -23,10 +24,12 @@ pub mod player;
 // Music sources and online services.
 pub mod lastfm;
 pub mod library;
+pub mod musicbrainz;
 pub mod spotify;
 
 // Built on the services above.
 pub mod discovery;
+pub mod lyrics;
 pub mod services;
 
 // Interfaces.

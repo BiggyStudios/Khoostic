@@ -119,6 +119,16 @@ pub(crate) enum SearchMode {
     Spotify,
 }
 
+/// Something the window should do (the app draws its own title bar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowCmd {
+    Minimize,
+    ToggleMaximize,
+    Close,
+    /// Start moving the window with the mouse.
+    Drag,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Drag {
     Seek(f32),
@@ -189,6 +199,9 @@ pub struct Gui {
     pub(crate) measured_fps: f32,
     /// The keyboard moved the selection last (show focus rings); cleared by clicking.
     pub(crate) kb_nav: bool,
+    /// The window is maximized (set by the window each frame; picks the restore icon).
+    pub maximized: bool,
+    pub(crate) window_cmd: Option<WindowCmd>,
 }
 
 pub struct FrameResult {
@@ -198,6 +211,8 @@ pub struct FrameResult {
     pub pointer: bool,
     /// Text to put on the clipboard.
     pub copy: Option<String>,
+    /// A window button was clicked, or the title bar dragged.
+    pub window: Option<WindowCmd>,
 }
 
 /// Mutable rendering services a frame needs.
@@ -261,6 +276,8 @@ impl Gui {
             config_path: config.source.clone(),
             measured_fps: 0.0,
             kb_nav: false,
+            maximized: false,
+            window_cmd: None,
         };
         (gui, problems)
     }
@@ -421,7 +438,7 @@ impl Gui {
             mid.h,
         );
 
-        self.top_bar(&mut ui, top, panel.x);
+        self.top_bar(&mut ui, top);
         ui.c.push_clip(sidebar);
         self.sidebar(&mut ui, sidebar);
         ui.c.pop_clip();
@@ -496,6 +513,7 @@ impl Gui {
             animating,
             pointer,
             copy,
+            window: self.window_cmd.take(),
         }
     }
 

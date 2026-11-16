@@ -184,6 +184,24 @@ impl Library {
         Ok(())
     }
 
+    /// Uris of liked songs from your files (Spotify likes live on Spotify).
+    pub fn liked_uris(&self) -> std::collections::HashSet<String> {
+        db::liked_uris(&self.conn.lock())
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    }
+
+    pub fn liked_tracks(&self) -> Vec<Track> {
+        db::liked_tracks(&self.conn.lock()).unwrap_or_default()
+    }
+
+    pub fn set_liked(&self, track: &Track, liked: bool) -> anyhow::Result<()> {
+        db::set_liked(&self.conn.lock(), track, liked)?;
+        self.version.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     pub fn delete_playlist(&self, id: i64) -> anyhow::Result<()> {
         db::delete_playlist(&self.conn.lock(), id)?;
         self.version.fetch_add(1, Ordering::AcqRel);

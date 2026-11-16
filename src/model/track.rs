@@ -120,6 +120,10 @@ pub struct Track {
     pub genre: Option<String>,
     pub duration: Option<Duration>,
     pub cover: Option<CoverRef>,
+    /// Spotify artist ids (base62), parallel to `artists`; empty for other sources.
+    pub artist_ids: Vec<String>,
+    /// Spotify album id (base62), for opening the album page.
+    pub album_id: Option<String>,
 }
 
 impl Track {
@@ -143,6 +147,14 @@ impl Track {
     }
 
     /// The artist an album is filed under.
+    /// The Spotify id of `artists[i]`, when known.
+    pub fn artist_id(&self, i: usize) -> Option<&str> {
+        self.artist_ids
+            .get(i)
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
+    }
+
     pub fn primary_artist(&self) -> Option<&str> {
         self.album_artist
             .as_deref()

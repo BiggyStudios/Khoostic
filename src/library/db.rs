@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::model::{CoverRef, Track, TrackLocator};
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 /// Separator for multi-valued text columns (ASCII unit separator: never appears in tags).
 const SEP: char = '\u{1f}';
 
@@ -29,6 +29,30 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     if version >= SCHEMA_VERSION {
         return Ok(());
     }
+    if version < 1 {
+        create_v1(conn)?;
+    }
+    if version < 2 {
+        // Liked songs that aren't on Spotify (local files), with enough to list them.
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS liked (
+                 uri TEXT PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 artists TEXT NOT NULL,
+                 album TEXT,
+                 duration_ms INTEGER,
+                 cover TEXT,
+                 added_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+    }
+    Ok(())
+}
+
+fn create_v1(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
         "BEGIN;
          CREATE TABLE IF NOT EXISTS tracks (
@@ -142,6 +166,7 @@ fn track_from_row(r: &Row) -> rusqlite::Result<Track> {
             .get::<_, Option<i64>>(9)?
             .map(|ms| Duration::from_millis(ms.max(0) as u64)),
         cover: cover_from_str(r.get(10)?),
+        ..Default::default()
     })
 }
 
@@ -382,6 +407,57 @@ pub fn delete_playlist(conn: &Connection, id: i64) -> rusqlite::Result<()> {
 }
 
 /// Replaces a playlist's contents.
+/// Uris of every liked (non-Spotify) song.
+pub fn liked_uris(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare_cached("SELECT uri FROM liked")?;
+    stmt.query_map([], |r| r.get(0))?.collect()
+}
+
+/// Liked songs, most recently liked first.
+pub fn liked_tracks(conn: &Connection) -> rusqlite::Result<Vec<Track>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT uri, title, artists, album, duration_ms, cover FROM liked
+         ORDER BY added_at DESC, rowid DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        let uri: String = r.get(0)?;
+        Ok(TrackLocator::from_uri(&uri).map(|locator| Track {
+            locator,
+            title: r.get(1).unwrap_or_default(),
+            artists: split(&r.get::<_, String>(2).unwrap_or_default()),
+            album: r.get(3).ok().flatten(),
+            duration: r
+                .get::<_, Option<i64>>(4)
+                .ok()
+                .flatten()
+                .map(|ms| Duration::from_millis(ms.max(0) as u64)),
+            cover: cover_from_str(r.get(5).ok().flatten()),
+            ..Default::default()
+        }))
+    })?;
+    Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+}
+
+pub fn set_liked(conn: &Connection, t: &Track, liked: bool) -> rusqlite::Result<()> {
+    if liked {
+        conn.execute(
+            "INSERT OR REPLACE INTO liked (uri, title, artists, album, duration_ms, cover)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                t.locator.to_uri(),
+                t.title,
+                join(&t.artists),
+                t.album,
+                t.duration.map(|d| d.as_millis() as i64),
+                cover_to_str(&t.cover),
+            ],
+        )?;
+    } else {
+        conn.execute("DELETE FROM liked WHERE uri = ?1", [t.locator.to_uri()])?;
+    }
+    Ok(())
+}
+
 pub fn set_playlist_tracks(
     conn: &mut Connection,
     id: i64,
@@ -436,4 +512,33 @@ pub fn playlist_tracks(conn: &Connection, id: i64) -> rusqlite::Result<Vec<Track
         }))
     })?;
     Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upgrades_a_v1_database_and_keeps_likes() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_v1(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let v: i32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let t = Track {
+            title: "Song".into(),
+            artists: vec!["A".into(), "B".into()],
+            duration: Some(Duration::from_secs(90)),
+            ..Track::from_path("C:/music/song.flac")
+        };
+        set_liked(&conn, &t, true).unwrap();
+        set_liked(&conn, &t, true).unwrap(); // liking twice is fine
+        assert_eq!(liked_uris(&conn).unwrap(), [t.locator.to_uri()]);
+        let back = liked_tracks(&conn).unwrap();
+        assert_eq!((back[0].title.as_str(), back[0].artists.len()), ("Song", 2));
+        set_liked(&conn, &t, false).unwrap();
+        assert!(liked_tracks(&conn).unwrap().is_empty());
+    }
 }

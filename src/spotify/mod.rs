@@ -5,7 +5,9 @@
 //! [`Pending`] results they can poll once per frame, plus a [`Status`] to show.
 
 pub mod api;
+pub mod artist;
 pub mod auth;
+pub mod collection;
 pub mod source;
 
 use std::path::PathBuf;
@@ -27,6 +29,7 @@ use crate::pending::Pending;
 use crate::player::SourceResolver;
 
 pub use api::{AlbumSummary, Playlist, SearchResults};
+pub use artist::{ArtistPage, ArtistSummary};
 pub use auth::Tokens;
 pub use source::Bitrate;
 
@@ -225,6 +228,65 @@ impl Spotify {
     pub fn search(&self, query: &str, limit: u32) -> Pending<SearchResults> {
         let q = query.to_owned();
         self.with_session(move |s| async move { api::search(&s, &q, limit as usize).await })
+    }
+
+    /// An artist's profile page.
+    pub fn artist(&self, id: &str) -> Pending<ArtistPage> {
+        let id = id.to_owned();
+        self.with_session(move |s| async move { artist::page(&s, &id).await })
+    }
+
+    /// Names and pictures for artist ids.
+    pub fn artist_summaries(&self, ids: Vec<String>) -> Pending<Vec<ArtistSummary>> {
+        self.with_session(move |s| async move { artist::summaries(&s, &ids).await })
+    }
+
+    /// The artists this account follows, most recent first.
+    pub fn followed_artists(&self) -> Pending<Vec<ArtistSummary>> {
+        self.with_session(|s| async move {
+            let ids: Vec<String> = collection::list(&s, collection::Set::Artist)
+                .await?
+                .iter()
+                .filter_map(|u| u.strip_prefix("spotify:artist:").map(str::to_owned))
+                .collect();
+            artist::summaries(&s, &ids).await
+        })
+    }
+
+    /// Follows or unfollows an artist.
+    pub fn set_following(&self, artist_id: &str, follow: bool) -> Pending<()> {
+        let uri = format!("spotify:artist:{artist_id}");
+        self.with_session(move |s| async move {
+            collection::write(&s, collection::Set::Artist, &[uri], follow).await
+        })
+    }
+
+    /// Ids of every liked song (cheap: no metadata).
+    pub fn liked_ids(&self) -> Pending<std::collections::HashSet<String>> {
+        self.with_session(|s| async move {
+            Ok(collection::list(&s, collection::Set::Collection)
+                .await?
+                .iter()
+                .filter_map(|u| u.strip_prefix("spotify:track:").map(str::to_owned))
+                .collect())
+        })
+    }
+
+    /// Adds songs to (or removes them from) Liked Songs.
+    pub fn set_liked(&self, track_ids: Vec<String>, liked: bool) -> Pending<()> {
+        let uris: Vec<String> = track_ids
+            .iter()
+            .map(|id| format!("spotify:track:{id}"))
+            .collect();
+        self.with_session(move |s| async move {
+            collection::write(&s, collection::Set::Collection, &uris, liked).await
+        })
+    }
+
+    /// Lyrics for a Spotify track (`None` when Spotify has none).
+    pub fn lyrics(&self, track_id: &str) -> Pending<Option<crate::model::Lyrics>> {
+        let id = track_id.to_owned();
+        self.with_session(move |s| async move { api::lyrics(&s, &id).await })
     }
 
     /// Songs like `track_id` (a Spotify base62 id), from Spotify's radio.
