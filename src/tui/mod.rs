@@ -33,6 +33,7 @@ pub fn run(services: Services, config: &Config, launch: Launch) -> anyhow::Resul
         library,
         spotify,
         discovery,
+        discord: _discord, // shows the status on its own
     } = services;
     launch.apply(&player);
     let mut app = App::new(player, library, spotify, discovery, config);

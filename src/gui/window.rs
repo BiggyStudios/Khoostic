@@ -40,9 +40,11 @@ pub fn run(app: Services, config: &Config, launch: Launch) -> anyhow::Result<()>
         library,
         spotify,
         discovery,
+        discord,
     } = app;
     launch.apply(&player);
-    let (gui, problems) = Gui::new(config, library, spotify, discovery);
+    let (mut gui, problems) = Gui::new(config, library, spotify, discovery);
+    gui.discord = Some(discord);
     let mut app = WinitApp {
         player,
         config: config.clone(),

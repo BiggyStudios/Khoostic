@@ -24,6 +24,7 @@ pub struct Config {
     pub gui: GuiConfig,
     pub spotify: SpotifyConfig,
     pub lastfm: LastfmConfig,
+    pub discord: DiscordConfig,
     pub playback: PlaybackConfig,
     pub lyrics: LyricsConfig,
     pub visualizer: VisualizerConfig,
@@ -157,6 +158,24 @@ impl Default for SpotifyConfig {
         Self {
             client_id: String::new(),
             bitrate: 320,
+        }
+    }
+}
+
+/// Discord status ("Listening to …"). Discord shows the name of the application whose id this is;
+/// create one at discord.com/developers/applications.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct DiscordConfig {
+    pub enabled: bool,
+    pub client_id: String,
+}
+
+impl Default for DiscordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            client_id: String::new(),
         }
     }
 }

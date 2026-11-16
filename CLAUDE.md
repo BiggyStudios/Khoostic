@@ -2,8 +2,8 @@
 
 Khoostic is a music player written in Rust: one crate, one binary (`khoostic`). The Vulkan-rendered
 GUI is the main interface; `--tui` gives a vim-style terminal UI over the same player core. Local
-files, Spotify (librespot) and Last.fm today; Navidrome/Subsonic, MPD, Discord presence and
-listen-along jams are planned.
+files, Spotify (librespot), Last.fm and Discord status today; listen-along jams,
+Navidrome/Subsonic and MPD are planned.
 
 ## Layout
 
@@ -16,9 +16,10 @@ only uses the ones listed above it here (keep it that way; no cycles back up).
 | `pending.rs` | `Pending<T>`: a background result the UIs poll once per frame |
 | `config.rs` | `config.toml` model; every field defaults, unknown keys are errors; `save_value` edits one key in place, `save_table` replaces a table; `config/visualizer.rs` declares every visualizer knob once (struct, defaults, Settings rows, GPU order) plus built-in presets |
 | `audio/` | `AudioSource` trait, symphonia decoding, `Conditioner` (stereo + rubato), engine thread, cpal output, FFT analysis feed |
-| `player/` | `Player` controller (queue ↔ engine, gapless preload), `SourceResolver`s, file browser model |
+| `player/` | `Player` controller (queue ↔ engine, gapless preload), `open.rs` (songs open on their own thread: newest pick wins, rapid skips settle, brief outages retried), `SourceResolver`s, file browser model |
 | `library/` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists, liked local songs |
 | `spotify/` | Browser sign-in (OAuth PKCE, cancellable local listener), library, search and lyrics over Spotify's client API (spclient, `api.rs`), artist pages (`artist.rs`), liked songs and followed artists (`collection.rs`), librespot streaming as an `AudioSource`, `SpotifyResolver` |
+| `discord.rs` | Discord status over the desktop app's local IPC (pipe / socket): song, cover (Deezer lookup for local songs), progress, jam party; needs an application id (`[discord] client_id`) |
 | `genres.rs` | Artist genres from MusicBrainz, falling back to Deezer's public API |
 | `lastfm/` | Signed API client, browser sign-in, scrobble rules (`tracker.rs`, pure), background scrobbler with a persisted offline queue, similar tracks |
 | `discovery.rs` | Song radio (Spotify radio + Last.fm similar, matched to local files first, library-only fallback) and the autoplay watcher |

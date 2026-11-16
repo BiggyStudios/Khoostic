@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::audio::EngineConfig;
 use crate::config::Config;
+use crate::discord::Discord;
 use crate::discovery::Discovery;
 use crate::lastfm::Lastfm;
 use crate::library::Library;
@@ -20,6 +21,8 @@ pub struct Services {
     pub library: Arc<Library>,
     pub spotify: Option<Arc<Spotify>>,
     pub discovery: Arc<Discovery>,
+    /// Discord status (follows the player; idle until it has an application id).
+    pub discord: Arc<Discord>,
 }
 
 /// What the interface should do with files/folders given on the command line.
@@ -55,11 +58,13 @@ impl Services {
             config.playback.autoplay,
         );
         discovery.start_autoplay(player.handle());
+        let discord = Discord::start(&config.discord, player.handle());
         Ok(Self {
             player,
             library,
             spotify,
             discovery,
+            discord,
         })
     }
 

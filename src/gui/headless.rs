@@ -42,6 +42,11 @@ impl Headless {
         })
     }
 
+    /// Shows the Discord settings (off by default in headless runs).
+    pub fn set_discord(&mut self, discord: Arc<crate::discord::Discord>) {
+        self.gui.discord = Some(discord);
+    }
+
     /// Runs one UI frame with `input` and returns RGBA8 pixels. Keeps rendering (without new
     /// input) until cover art has finished loading, so captures are complete.
     pub fn frame(&mut self, input: &Input, player: &Player) -> anyhow::Result<Vec<u8>> {

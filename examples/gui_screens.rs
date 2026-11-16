@@ -223,6 +223,21 @@ fn main() -> anyhow::Result<()> {
         &drag(800.0, false, false, true),
     )?;
     h.frame(&click(740.0, 442.0, false), &player)?;
+    // Discord, at the bottom (no application id: it never connects).
+    h.set_discord(khoostic::discord::Discord::start(
+        &khoostic::config::DiscordConfig::default(),
+        player.handle(),
+    ));
+    std::thread::sleep(Duration::from_millis(1500));
+    shot(
+        &mut h,
+        "settings-discord",
+        &Input {
+            mouse: Some((700.0, 400.0)),
+            scroll: 9000.0,
+            ..Default::default()
+        },
+    )?;
     shot(&mut h, "visualizer", &keys(&[Key::Char('6')]))?;
     // 3D: the bars crumble into the storm, then fly back.
     mid(&mut h, "viz3d-1-crumble", &click(860.0, 109.0, false), 450)?;

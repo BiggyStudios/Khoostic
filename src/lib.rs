@@ -22,6 +22,7 @@ pub mod audio;
 pub mod player;
 
 // Music sources and online services.
+pub mod discord;
 pub mod genres;
 pub mod lastfm;
 pub mod library;

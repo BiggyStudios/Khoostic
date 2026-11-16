@@ -216,6 +216,9 @@ pub struct Gui {
     /// Last.fm API key/secret inputs on the Settings page.
     pub(crate) lf_key: TextField,
     pub(crate) lf_secret: TextField,
+    /// Discord status (None in headless runs).
+    pub(crate) discord: Option<Arc<crate::discord::Discord>>,
+    pub(crate) discord_id: TextField,
     pub(crate) anims: Anims,
     /// The view the page transition last started for.
     pub(crate) shown_view: View,
@@ -335,6 +338,8 @@ impl Gui {
             radio: None,
             lf_key: TextField::default(),
             lf_secret: TextField::secret(),
+            discord: None,
+            discord_id: TextField::default(),
             anims: Anims::default(),
             shown_view: View::Albums,
             view_since: Instant::now() - Duration::from_secs(1),
@@ -625,6 +630,7 @@ impl Gui {
             || self.lf_key.focused
             || self.lf_secret.focused
             || self.preset_name.focused
+            || self.discord_id.focused
     }
 
     /// Starts building a radio from `seed`; it replaces what's coming up when ready.

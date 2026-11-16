@@ -446,6 +446,98 @@ impl Gui {
             }
         }
         y += 66.0;
+
+        if let Some(d) = self.discord.clone() {
+            use crate::discord::Status as D;
+            section(ui, &mut y, "DISCORD");
+            row_text(
+                ui,
+                y,
+                "Show on Discord",
+                "Your Discord status shows the song you're listening to",
+            );
+            let on = d.enabled() as usize;
+            if let Some(i) = ui.segmented(
+                anim::id("set-discord"),
+                control_x,
+                y + 3.0,
+                &["Off", "On"],
+                on,
+            ) && i != on
+            {
+                d.set_enabled(i == 1);
+                self.save_bool("discord.enabled", i == 1);
+            }
+            y += 58.0;
+            let status = d.status();
+            if status != D::Off {
+                let (title, hint) = match &status {
+                    D::Connected(name) => (
+                        format!("Connected as {name}"),
+                        "Shows while something plays".to_string(),
+                    ),
+                    D::NotRunning => (
+                        "Waiting for Discord".into(),
+                        "Open the Discord app; Khoostic connects on its own".into(),
+                    ),
+                    D::Failed(e) => ("Not connected".into(), e.clone()),
+                    _ => (
+                        "Needs an application id".into(),
+                        "Make an app named Khoostic there, paste its id below".into(),
+                    ),
+                };
+                row_text(ui, y, &title, &hint);
+                if !matches!(status, D::Connected(_))
+                    && ui
+                        .pill("Open Discord's developer page", control_x, y + 3.0, false)
+                        .0
+                {
+                    let _ = open::that("https://discord.com/developers/applications");
+                }
+                y += 58.0;
+                row_text(
+                    ui,
+                    y,
+                    "Application id",
+                    "From discord.com/developers/applications",
+                );
+                if !self.discord_id.focused && self.discord_id.text.is_empty() {
+                    self.discord_id.text = d.client_id();
+                }
+                let w = (body.right() - control_x - 90.0).clamp(160.0, 260.0);
+                ui.text_input(
+                    &mut self.discord_id,
+                    Rect::new(control_x, y, w, 36.0),
+                    "Application id",
+                    None,
+                );
+                let id = self.discord_id.text.trim().to_owned();
+                let changed = id != d.client_id();
+                let enter = self.discord_id.focused
+                    && ui
+                        .input
+                        .keys
+                        .iter()
+                        .any(|k| k.key == crate::gui::ui::Key::Enter);
+                let valid = id.len() >= 15 && id.bytes().all(|b| b.is_ascii_digit());
+                if (ui
+                    .pill("Save", control_x + w + 10.0, y + 1.0, changed && valid)
+                    .0
+                    || enter)
+                    && changed
+                {
+                    if valid {
+                        d.set_client_id(&id);
+                        self.save_str("discord.client_id", &id);
+                        self.discord_id.focused = false;
+                        self.toast("Saved. Connecting to Discord…");
+                    } else {
+                        self.toast("An application id is a long number");
+                    }
+                }
+                y += 58.0;
+            }
+        }
         ui.c.pop_clip();
         // Scrolls when the window is too short for everything.
         let content = y - top;
