@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use crate::audio::{AnalysisFrame, PlaybackState};
-use crate::gui::app::{Drag, Gui, fmt_time};
+use crate::gui::app::{Drag, Gui, View, fmt_time};
 use crate::gui::render::{Color, Rect, Weight};
 use crate::gui::ui::Ui;
 use crate::gui::ui::anim;
@@ -86,36 +86,86 @@ impl Gui {
         match &snap.current {
             Some(e) => {
                 let seed = e.track.album.as_deref().unwrap_or(&e.track.title);
-                let clickable = Rect::new(art.x, art.y, info_w + 76.0, art.h);
-                let h = ui.hover_t(anim::id("np-art"), clickable);
                 let beat = ui.anim.to(anim::id("np-bass"), a.bass, 18.0);
                 ui.c.glow(art, t.gradient(0.5).alpha(0.08 + 0.3 * beat), 10.0, 12.0);
                 ui.cover(art, e.track.cover.as_ref(), CoverSize::Large, 8.0, seed);
+                // Title → album, artist → artist, like Spotify (underlined on hover).
+                let text_w = info_w - 34.0;
+                let title_w = ui
+                    .measure(&e.track.title, t.font_size + 0.5, Weight::Medium)
+                    .min(text_w);
+                let title_r = Rect::new(tx, r.y + 26.0, title_w, 22.0);
+                let th = ui.hovered(title_r) || ui.hovered(art);
                 ui.label(
                     &e.track.title,
                     tx,
-                    Rect::new(tx, r.y + 26.0, info_w, 22.0),
-                    info_w,
+                    title_r,
+                    text_w,
                     t.font_size + 0.5,
                     Weight::Medium,
                     t.fg,
                 );
+                if th {
+                    ui.c.rect(
+                        Rect::new(tx, title_r.bottom() - 2.0, title_w, 1.0),
+                        t.fg.alpha(0.8),
+                        0.0,
+                    );
+                }
+                let artist = e.track.artists.first().cloned().unwrap_or_default();
                 let sub = match e.track.artist_line() {
                     s if s.is_empty() => crate::gui::views::lists::album_of(&e.track),
                     s => s,
                 };
+                let sub_w = ui
+                    .measure(&sub, t.font_size - 1.5, Weight::Regular)
+                    .min(text_w);
+                let sub_r = Rect::new(tx, r.y + 49.0, sub_w, 20.0);
+                let ah = !artist.is_empty() && ui.hovered(sub_r);
                 ui.label(
                     &sub,
                     tx,
-                    Rect::new(tx, r.y + 49.0, info_w, 20.0),
-                    info_w,
+                    sub_r,
+                    text_w,
                     t.font_size - 1.5,
                     Weight::Regular,
-                    t.dim.lerp(t.fg, 0.4 * h),
+                    if ah { t.fg } else { t.dim },
                 );
-                if ui.clicked(clickable) {
-                    let track = (*e.track).clone();
+                if ah {
+                    ui.c.rect(
+                        Rect::new(tx, sub_r.bottom() - 2.0, sub_w, 1.0),
+                        t.fg.alpha(0.7),
+                        0.0,
+                    );
+                }
+                ui.pointer |= th || ah;
+                let track = (*e.track).clone();
+                if th && ui.input.pressed {
                     self.open_album_of(&track);
+                } else if ah && ui.input.pressed {
+                    let id = track.artist_id(0).map(str::to_owned);
+                    self.open_artist(&artist, id.as_deref());
+                }
+                // Save to / remove from Liked Songs.
+                let liked = self.is_liked(&track);
+                let lx = tx + title_w.max(sub_w) + 22.0;
+                let lid = anim::id("np-like");
+                let lo = ui.anim.to(lid ^ 9, liked as u8 as f32, anim::NORMAL);
+                let icon = if liked {
+                    Icon::HeartFilled
+                } else {
+                    Icon::Heart
+                };
+                let green = crate::gui::views::spotify_green();
+                if ui.icon_button(
+                    lid,
+                    icon,
+                    (lx, r.y + 47.0),
+                    17.0,
+                    t.dim.lerp(green, lo),
+                    t.fg.lerp(green, lo),
+                ) {
+                    self.set_liked(&track, !liked);
                 }
             }
             None => {
@@ -311,59 +361,88 @@ impl Gui {
                 player.send(Cmd::SetVolume(self.unmute_to.max(0.05)));
             }
         }
-        // Autoplay toggle and "radio from this song".
-        let auto = self.discovery.autoplay();
-        let aid = anim::id("np-autoplay");
-        let ao = ui.anim.to(aid ^ 9, auto as u8 as f32, anim::NORMAL);
-        let (ax, ay) = (vol.x - 106.0, vol.y + vol.h / 2.0);
-        if ui.icon_button(
-            aid,
-            Icon::Autoplay,
-            (ax, ay),
-            18.0,
-            dim.lerp(accent, ao),
-            fg.lerp(accent, ao),
-        ) {
-            self.discovery.set_autoplay(!auto);
-            self.save_bool("playback.autoplay", !auto);
-            self.toast(if auto {
-                "Autoplay off"
-            } else {
-                "Autoplay on: similar songs keep playing when the queue ends"
-            });
-        }
-        if ao > 0.01 {
-            ui.c.circle(ax, ay + 15.0, 2.0 * ao, accent.alpha(ao));
-        }
-        let busy = self.radio.is_some();
-        let rc = if busy { accent } else { dim };
-        if ui.icon_button(
-            anim::id("np-radio"),
-            Icon::Radio,
-            (vol.x - 148.0, ay),
-            18.0,
-            rc,
-            fg,
-        ) && !busy
-        {
-            match &snap.current {
-                Some(e) => self.start_radio((*e.track).clone()),
-                None => self.toast("Play something first, or right-click a song 'Start radio'"),
+        // Buttons left of the volume, most used nearest it. On narrow windows the ones that
+        // would run into the transport are left out.
+        let ay = vol.y + vol.h / 2.0;
+        let min_x = cx + 128.0;
+        let mut bx = vol.x - 64.0;
+        for button in [
+            Button::Queue,
+            Button::Lyrics,
+            Button::Autoplay,
+            Button::Radio,
+            Button::Visualizer,
+        ] {
+            if bx < min_x {
+                break;
             }
-        }
-        let on_queue = self.queue_open;
-        let qc = if on_queue { accent } else { dim };
-        if ui.icon_button(
-            anim::id("np-queue"),
-            Icon::Queue,
-            (vol.x - 64.0, vol.y + vol.h / 2.0),
-            18.0,
-            qc,
-            if on_queue { accent } else { fg },
-        ) {
-            self.queue_open = !on_queue;
+            let (icon, on, id) = match button {
+                Button::Queue => (Icon::Queue, self.queue_open, "np-queue"),
+                Button::Lyrics => (Icon::Mic, self.view == View::Lyrics, "np-lyrics"),
+                Button::Autoplay => (Icon::Autoplay, self.discovery.autoplay(), "np-autoplay"),
+                Button::Radio => (Icon::Radio, self.radio.is_some(), "np-radio"),
+                Button::Visualizer => (Icon::Visualizer, self.view == View::Visualizer, "np-vis"),
+            };
+            let id = anim::id(id);
+            let o = ui.anim.to(id ^ 9, on as u8 as f32, anim::NORMAL);
+            if ui.icon_button(
+                id,
+                icon,
+                (bx, ay),
+                18.0,
+                dim.lerp(accent, o),
+                fg.lerp(accent, o),
+            ) {
+                match button {
+                    Button::Queue => self.queue_open = !self.queue_open,
+                    Button::Lyrics => self.toggle_lyrics(),
+                    Button::Autoplay => {
+                        let auto = !on;
+                        self.discovery.set_autoplay(auto);
+                        self.save_bool("playback.autoplay", auto);
+                        self.toast(if auto {
+                            "Autoplay on: similar songs keep playing when the queue ends"
+                        } else {
+                            "Autoplay off"
+                        });
+                    }
+                    Button::Radio if !on => match &snap.current {
+                        Some(e) => self.start_radio((*e.track).clone()),
+                        None => {
+                            self.toast("Play something first, or right-click a song 'Start radio'")
+                        }
+                    },
+                    Button::Radio => {}
+                    Button::Visualizer => {
+                        if on {
+                            self.back();
+                        } else {
+                            self.navigate(View::Visualizer);
+                        }
+                    }
+                }
+            }
+            if o > 0.01
+                && matches!(
+                    button,
+                    Button::Autoplay | Button::Lyrics | Button::Visualizer
+                )
+            {
+                ui.c.circle(bx, ay + 15.0, 2.0 * o, accent.alpha(o));
+            }
+            bx -= 42.0;
         }
     }
+}
+
+/// Player bar buttons beside the volume, in order of priority.
+#[derive(Clone, Copy)]
+enum Button {
+    Queue,
+    Lyrics,
+    Autoplay,
+    Radio,
+    Visualizer,
 }
 
 fn frac_vol(vol: Rect, mouse: Option<(f32, f32)>) -> f32 {

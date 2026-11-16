@@ -17,6 +17,7 @@ pub mod queue_panel;
 pub mod render;
 pub mod sidebar;
 pub mod spotify;
+pub mod state;
 pub mod top_bar;
 pub mod ui;
 pub mod views;

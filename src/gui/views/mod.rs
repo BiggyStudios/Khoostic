@@ -3,10 +3,13 @@
 // Row loops index by position: the index drives layout and selection, not just access.
 #![allow(clippy::needless_range_loop)]
 
+pub mod artist;
 pub mod files;
 pub mod grid;
 pub mod library;
 pub mod lists;
+pub mod lyrics;
+pub mod page;
 pub mod playlists;
 pub mod search;
 pub mod settings;
@@ -31,6 +34,12 @@ impl Gui {
         a: &AnalysisFrame,
         dt: f32,
     ) {
+        // Home: your library's sections as chips, Spotify style.
+        let r = if self.view.section() == View::Albums {
+            self.home_tabs(ui, r)
+        } else {
+            r
+        };
         match self.view.clone() {
             View::Albums => self.albums_view(ui, r, player),
             View::Album { name, artist } => {
@@ -51,6 +60,10 @@ impl Gui {
                 self.spotify_album_view(ui, r, player, snap, a, &id, &name)
             }
             View::Liked => self.liked_view(ui, r, player, snap, a),
+            View::SpotifyArtist { id, name } => {
+                self.spotify_artist_view(ui, r, player, snap, a, &id, &name)
+            }
+            View::Lyrics => self.lyrics_view(ui, r, player, snap),
             View::Settings => self.settings_view(ui, r, player, snap),
         }
     }
@@ -123,11 +136,15 @@ impl Gui {
             View::Songs => ("songs", self.cache.songs.len(), false),
             View::Search => (
                 "search",
-                self.cache.search.as_ref().map_or(0, |s| s.1.len()),
+                self.cache.search_shown.as_ref().map_or(0, |s| s.len()),
                 false,
             ),
             View::Files => ("files", self.browser.entries().len(), false),
-            View::Visualizer | View::Playlists | View::Settings => return,
+            View::Visualizer
+            | View::Playlists
+            | View::Settings
+            | View::SpotifyArtist { .. }
+            | View::Lyrics => return,
             View::LocalPlaylist(_)
             | View::SpotifyPlaylist { .. }
             | View::SpotifyAlbum { .. }
@@ -188,7 +205,7 @@ impl Gui {
                 let tracks = match &self.view {
                     View::Album { .. } => self.cache.detail.as_ref().map(|d| d.1.clone()),
                     View::Songs => Some(self.cache.songs.clone()),
-                    View::Search => self.cache.search.as_ref().map(|s| s.1.clone()),
+                    View::Search => self.cache.search_shown.clone(),
                     _ => self.collection_tracks(),
                 };
                 let Some(tracks) = tracks else { return };
@@ -267,4 +284,32 @@ pub(crate) fn button_icon(label: &str) -> Option<Icon> {
 
 pub(crate) fn spotify_green() -> Color {
     Color::rgba8(30, 215, 96, 255)
+}
+
+const HOME_TABS: [(View, &str); 5] = [
+    (View::Albums, "Albums"),
+    (View::Artists, "Artists"),
+    (View::Songs, "Songs"),
+    (View::Playlists, "Playlists"),
+    (View::Files, "Files"),
+];
+
+impl Gui {
+    /// The chips at the top of the home pages; returns the page area below them.
+    fn home_tabs(&mut self, ui: &mut Ui, r: Rect) -> Rect {
+        let labels: Vec<&str> = HOME_TABS.iter().map(|(_, l)| *l).collect();
+        let current = match &self.view {
+            View::Album { .. } => View::Albums,
+            View::Artist(_) => View::Artists,
+            v => v.clone(),
+        };
+        let active = HOME_TABS
+            .iter()
+            .position(|(v, _)| *v == current)
+            .unwrap_or(0);
+        if let Some(i) = page::chips(ui, r.x, r.y, &labels, active) {
+            self.switch(HOME_TABS[i].0.clone());
+        }
+        Rect::new(r.x, r.y + 56.0, r.w, (r.h - 56.0).max(0.0))
+    }
 }

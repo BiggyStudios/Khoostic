@@ -314,6 +314,29 @@ impl Gui {
             let tracks = self.library.artist_tracks(name);
             self.play_tracks(tracks, player, shuffle);
         }
+        // The same artist on Spotify (found by searching their name): link to the profile.
+        let want = crate::model::matching::normalize(name);
+        let on_spotify = self
+            .spotify_search(name)
+            .filter(|(exact, _)| *exact)
+            .and_then(|(_, res)| {
+                res.artists
+                    .iter()
+                    .find(|a| crate::model::matching::normalize(&a.name) == want)
+                    .map(|a| a.id.clone())
+            });
+        if let Some(id) = on_spotify {
+            let (open, _) = ui.pill_icon(
+                "Spotify profile",
+                Some(Icon::Spotify),
+                x + 240.0,
+                by + 3.0,
+                false,
+            );
+            if open {
+                self.open_artist(name, Some(&id));
+            }
+        }
 
         let grid = Rect::new(r.x, r.y + 166.0, r.w, (r.h - 166.0).max(0.0));
         let (open, play) = self.album_grid(ui, grid, "artist", &albums);

@@ -8,20 +8,25 @@ use std::time::{Duration, Instant};
 use crate::audio::PlaybackState;
 use crate::config::Config;
 use crate::discovery::Discovery;
+use crate::genres::Genres;
 use crate::gui::player_bar::PlayClock;
 use crate::gui::queue_panel::QUEUE_W;
 use crate::gui::render::images::ImageStore;
 use crate::gui::render::text::TextSystem;
 use crate::gui::render::{Canvas, Color, Rect, Weight};
+use crate::gui::state::UiState;
 use crate::gui::ui::anim::{self, Anims, ease_out};
 use crate::gui::ui::{Input, Key, TextField, Theme, Ui};
 use crate::library::{Album, Artist, Library, TrackOrder};
+use crate::lyrics::LyricsService;
 use crate::model::{Track, TrackLocator};
 use crate::pending::Pending;
 use crate::player::browse::Browser;
 use crate::player::{Player, PlayerCommand as Cmd};
 
-pub(crate) const SIDEBAR_W: f32 = 236.0;
+/// Library panel width, open and collapsed to covers (gap included).
+pub(crate) const SIDEBAR_W: f32 = 304.0;
+pub(crate) const SIDEBAR_MIN: f32 = 84.0;
 pub(crate) const BAR_H: f32 = 96.0;
 pub(crate) const ROW_H: f32 = 48.0;
 pub(crate) const PAD: f32 = 32.0;
@@ -58,6 +63,13 @@ pub enum View {
         name: String,
     },
     Liked,
+    /// A Spotify artist's profile.
+    SpotifyArtist {
+        id: String,
+        name: String,
+    },
+    /// Lyrics of the playing song.
+    Lyrics,
     Settings,
 }
 
@@ -69,6 +81,7 @@ impl View {
             View::Artist(_) => View::Artists,
             View::LocalPlaylist(_) | View::SpotifyPlaylist { .. } => View::Playlists,
             View::SpotifyAlbum { .. } => View::Search,
+            View::Songs | View::Files | View::Playlists => View::Albums,
             v => v.clone(),
         }
     }
@@ -112,11 +125,15 @@ impl ListState {
     }
 }
 
+/// Which results the search page shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SearchMode {
+pub(crate) enum SearchTab {
     All,
+    Songs,
+    Artists,
+    Albums,
+    /// Only what's in your library.
     Library,
-    Spotify,
 }
 
 /// Something the window should do (the app draws its own title bar).
@@ -148,6 +165,10 @@ pub(crate) struct LibCache {
     pub search: Option<(String, Arc<Vec<Track>>)>,
     /// Library-only matches for the current query.
     pub lib_search: Option<(String, Arc<Vec<Track>>)>,
+    /// The song list the search page shows now (keyboard navigation).
+    pub search_shown: Option<Arc<Vec<Track>>>,
+    /// Library songs by the artist whose Spotify page is open.
+    pub artist_tracks: Option<(String, Arc<Vec<Track>>)>,
 }
 
 pub struct Gui {
@@ -176,8 +197,8 @@ pub struct Gui {
     pub(crate) menu: Option<crate::gui::menu::ContextMenu>,
     /// Last known mouse position (for anchoring menus).
     pub(crate) mouse: (f32, f32),
-    /// Which sources the search page shows.
-    pub(crate) search_mode: SearchMode,
+    /// Which results the search page shows.
+    pub(crate) search_tab: SearchTab,
     pub discovery: Arc<Discovery>,
     /// A song radio being put together: (seed, suggestions).
     pub(crate) radio: Option<(Track, Pending<Vec<Track>>)>,
@@ -202,6 +223,22 @@ pub struct Gui {
     /// The window is maximized (set by the window each frame; picks the restore icon).
     pub maximized: bool,
     pub(crate) window_cmd: Option<WindowCmd>,
+    /// Panel size, filter and hidden items; saved to `state_path` when changed.
+    pub(crate) ui_state: UiState,
+    pub(crate) state_path: Option<PathBuf>,
+    /// Hidden library items are listed (dimmed) so they can be shown again.
+    pub(crate) show_hidden: bool,
+    pub(crate) lyrics: Arc<LyricsService>,
+    pub(crate) genres: Arc<Genres>,
+    /// The lyrics page stops following the song for a while after a manual scroll.
+    pub(crate) lyrics_manual: Option<Instant>,
+    /// The artist page shows all ten popular songs, not five.
+    pub(crate) artist_more: bool,
+    /// Discography tab on artist pages: 0 popular, 1 albums, 2 singles and EPs.
+    pub(crate) discography: usize,
+    pub(crate) lyrics_layout: Option<crate::gui::views::lyrics::LyricsLayout>,
+    /// Text to show beside the hovered thing this frame: (text, left-middle anchor).
+    pub(crate) tooltip: Option<(String, (f32, f32))>,
 }
 
 pub struct FrameResult {
@@ -232,7 +269,12 @@ impl Gui {
             Arc::new(move |url: &str| s.fetch_bytes(url))
         });
         let g = &config.gui;
-        let (theme, problems) = Theme::from_config(&g.theme, g.corner_radius, g.font_size);
+        let (theme, mut problems) = Theme::from_config(&g.theme, g.corner_radius, g.font_size);
+        let (lyrics, lyric_problems) = LyricsService::new(&config.lyrics, spotify.clone());
+        problems.extend(lyric_problems);
+        // Only a real config (not tests or examples) reads and writes the saved panel state.
+        let state_path = config.source.as_ref().and_then(|_| UiState::default_path());
+        let ui_state = state_path.as_deref().map(UiState::load).unwrap_or_default();
         let music_dirs = config.library.music_dirs.clone();
         let start = music_dirs
             .first()
@@ -261,7 +303,7 @@ impl Gui {
             sp: Default::default(),
             menu: None,
             mouse: (0.0, 0.0),
-            search_mode: SearchMode::All,
+            search_tab: SearchTab::All,
             discovery,
             radio: None,
             lf_key: TextField::default(),
@@ -278,6 +320,16 @@ impl Gui {
             kb_nav: false,
             maximized: false,
             window_cmd: None,
+            ui_state,
+            state_path,
+            show_hidden: false,
+            lyrics,
+            genres: Genres::new(),
+            lyrics_manual: None,
+            artist_more: false,
+            discography: 0,
+            lyrics_layout: None,
+            tooltip: None,
         };
         (gui, problems)
     }
@@ -339,6 +391,7 @@ impl Gui {
         self.cache.detail = None;
         self.cache.search = None;
         self.cache.lib_search = None;
+        self.cache.artist_tracks = None;
         // An empty library is better shown as files the first time.
         if self.cache.albums.is_empty()
             && self.cache.songs.is_empty()
@@ -365,7 +418,7 @@ impl Gui {
         }
         let images_changed = gfx.images.poll();
         self.refresh_library();
-        self.poll_spotify();
+        self.poll_spotify(player);
         if let Some(m) = input.mouse {
             self.mouse = m;
         }
@@ -422,8 +475,17 @@ impl Gui {
         let full = ui.c.bounds();
         let (body, bar) = full.split_bottom(BAR_H);
         let (top, mid) = body.split_top(TOP_H);
-        let sidebar = Rect::new(mid.x + GAP, mid.y, SIDEBAR_W - GAP, mid.h);
-        let queue_w = QUEUE_W.min((mid.w - SIDEBAR_W - 3.0 * GAP) * 0.42).max(0.0);
+        // The library panel shrinks to covers when collapsed (or when the window is narrow).
+        let open_w = SIDEBAR_W.min(mid.w * 0.3).max(SIDEBAR_MIN);
+        // Too narrow to be readable open: show the covers, like Spotify on small windows.
+        let target_w = if self.ui_state.sidebar_collapsed || open_w < 220.0 {
+            SIDEBAR_MIN
+        } else {
+            open_w
+        };
+        let side_w = ui.anim.to(anim::id("sidebar-w"), target_w, anim::NORMAL);
+        let sidebar = Rect::new(mid.x + GAP, mid.y, side_w - GAP, mid.h);
+        let queue_w = QUEUE_W.min((mid.w - side_w - 3.0 * GAP) * 0.42).max(0.0);
         let q = ui.anim.to(
             anim::id("queue-open"),
             self.queue_open as u8 as f32,
@@ -440,7 +502,7 @@ impl Gui {
 
         self.top_bar(&mut ui, top);
         ui.c.push_clip(sidebar);
-        self.sidebar(&mut ui, sidebar);
+        self.sidebar(&mut ui, sidebar, player);
         ui.c.pop_clip();
         if q > 0.005 {
             // Slides in from the right edge as the page makes room.
@@ -484,6 +546,7 @@ impl Gui {
         self.now_playing(&mut ui, bar, player, &snap, &analysis);
         ui.input = input;
         self.draw_menu(&mut ui, player);
+        self.draw_tooltip(&mut ui);
         self.draw_toast(&mut ui, panel);
 
         let mut scrolling = false;
@@ -584,6 +647,7 @@ impl Gui {
                 Key::Char('4') => self.queue_open = !self.queue_open,
                 Key::Char('5') => self.switch(View::Files),
                 Key::Char('6') => self.switch(View::Visualizer),
+                Key::Char('L') => self.toggle_lyrics(),
                 Key::Char('o') => self.reveal_playing(player),
                 _ => self.view_key(*k, player),
             }
@@ -599,6 +663,12 @@ impl Gui {
 
     /// Opens the album page for a track (clicking the now-playing cover).
     pub(crate) fn open_album_of(&mut self, track: &Track) {
+        if let (TrackLocator::Spotify { .. }, Some(id)) = (&track.locator, &track.album_id) {
+            return self.navigate(View::SpotifyAlbum {
+                id: id.clone(),
+                name: track.album.clone().unwrap_or_default(),
+            });
+        }
         if let Some(album) = &track.album {
             self.navigate(View::Album {
                 name: album.clone(),
@@ -663,5 +733,57 @@ pub(crate) fn local_path(t: &Track) -> Option<&std::path::Path> {
     match &t.locator {
         TrackLocator::Local(p) => Some(p),
         _ => None,
+    }
+}
+
+impl Gui {
+    /// Opens the lyrics page, or goes back from it.
+    pub(crate) fn toggle_lyrics(&mut self) {
+        if self.view == View::Lyrics {
+            if !self.back() {
+                self.switch(View::Albums);
+            }
+        } else {
+            self.lyrics_manual = None;
+            self.navigate(View::Lyrics);
+        }
+    }
+
+    pub(crate) fn save_ui_state(&self) {
+        if let Some(p) = &self.state_path {
+            self.ui_state.save(p);
+        }
+    }
+
+    /// Opens an artist: the Spotify profile when the id is known, else the library page.
+    pub(crate) fn open_artist(&mut self, name: &str, spotify_id: Option<&str>) {
+        match spotify_id {
+            Some(id) if self.spotify_connected() => {
+                self.artist_more = false;
+                self.discography = 0;
+                self.navigate(View::SpotifyArtist {
+                    id: id.to_owned(),
+                    name: name.to_owned(),
+                });
+            }
+            _ => self.navigate(View::Artist(name.to_owned())),
+        }
+    }
+}
+
+impl Gui {
+    /// A label beside something hovered (anchored at its left-middle point), above everything.
+    fn draw_tooltip(&mut self, ui: &mut Ui) {
+        let Some((text, (x, y))) = self.tooltip.take() else {
+            return;
+        };
+        let t = ui.theme;
+        let w = ui.measure(&text, 13.0, Weight::Medium) + 24.0;
+        let tip = Rect::new(x, y - 16.0, w, 32.0);
+        ui.c.set_layer(1);
+        ui.c.glow(tip, Color::BLACK.alpha(0.5), 6.0, 10.0);
+        ui.c.rect(tip, t.surface_hover, 6.0);
+        ui.label_center(&text, tip, 13.0, Weight::Medium, t.fg);
+        ui.c.set_layer(0);
     }
 }

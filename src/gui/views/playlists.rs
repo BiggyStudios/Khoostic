@@ -235,7 +235,7 @@ impl Gui {
         snap: &PlayerSnapshot,
         a: &crate::audio::AnalysisFrame,
     ) {
-        let tracks = self.ensure_tracks("liked");
+        let tracks = self.liked_tracks();
         if self
             .collection_page(
                 ui,
@@ -243,7 +243,7 @@ impl Gui {
                 player,
                 snap,
                 a,
-                "SPOTIFY",
+                "PLAYLIST",
                 "Liked Songs",
                 None,
                 tracks.clone(),
@@ -272,12 +272,17 @@ impl Gui {
         name: &str,
     ) {
         let tracks = self.ensure_tracks(&format!("al:{id}"));
-        let cover = self.sp.search.as_ref().and_then(|s| {
-            s.1.albums
-                .iter()
-                .find(|al| al.id == id)
-                .and_then(|al| al.cover.clone())
-        });
+        // The cover from wherever the album was found (until its songs, which carry it, load).
+        let in_search = self.sp.searches.values().flat_map(|s| s.albums.iter());
+        let on_artists = self
+            .sp
+            .artists
+            .values()
+            .flat_map(|p| p.popular_releases.iter().chain(&p.albums).chain(&p.singles));
+        let cover = in_search
+            .chain(on_artists)
+            .find(|al| al.id == id)
+            .and_then(|al| al.cover.clone());
         self.collection_page(
             ui,
             r,

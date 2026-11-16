@@ -51,6 +51,8 @@ fn main() -> anyhow::Result<()> {
     let out = args.next().expect("output dir");
     let mut config = Config::default();
     config.library.music_dirs = vec![music.clone().into()];
+    // Lyrics from .lrc files only: no network in screenshots.
+    config.lyrics.providers = vec!["local".into()];
     let tmp = std::env::temp_dir().join("khoostic-example-lib");
     let library = Library::open(&tmp.join("lib.db"), &tmp.join("covers"))?;
     let stats = library.scan_blocking(&[music.clone().into()])?;
@@ -93,9 +95,9 @@ fn main() -> anyhow::Result<()> {
 
     shot(&mut h, "lib-albums", &Input::default())?;
     // Open the first album (top-left tile), then double-click its first track.
-    h.frame(&click(330.0, 190.0, false), &player)?;
-    h.frame(&click(600.0, 252.0 + 20.0, false), &player)?;
-    h.frame(&click(600.0, 252.0 + 20.0, true), &player)?;
+    h.frame(&click(420.0, 300.0, false), &player)?;
+    h.frame(&click(700.0, 395.0, false), &player)?;
+    h.frame(&click(700.0, 395.0, true), &player)?;
     std::thread::sleep(Duration::from_millis(1200));
     player.send(PlayerCommand::Seek(Duration::from_secs(40)));
     std::thread::sleep(Duration::from_millis(600));
@@ -108,6 +110,11 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
 
+    shot(&mut h, "lyrics", &keys(&[Key::Char('L')]))?;
+    h.frame(&keys(&[Key::Char('L')]), &player)?;
+    // Collapse Your Library to covers, and open it again.
+    shot(&mut h, "collapsed", &click(60.0, 94.0, false))?;
+    h.frame(&click(42.0, 94.0, false), &player)?;
     shot(&mut h, "lib-artists", &keys(&[Key::Char('2')]))?;
     shot(&mut h, "lib-songs", &keys(&[Key::Char('3')]))?;
     h.frame(&keys(&[Key::Char('/')]), &player)?;
@@ -120,6 +127,8 @@ fn main() -> anyhow::Result<()> {
             ..keys(&[Key::Char('b'), Key::Paste])
         },
     )?;
+    shot(&mut h, "search-songs", &click(415.0, 108.0, false))?;
+    h.frame(&click(360.0, 108.0, false), &player)?;
     let select_all = KeyPress {
         key: Key::Char('a'),
         shift: false,
@@ -162,7 +171,7 @@ fn main() -> anyhow::Result<()> {
     shot(&mut h, "sp-menu", &row)?;
     h.frame(&keys(&[Key::Escape]), &player)?;
     shot(&mut h, "sp-playlists", &click(100.0, 258.0, false))?;
-    shot(&mut h, "settings", &click(1250.0, 32.0, false))?;
+    shot(&mut h, "settings", &click(1116.0, 32.0, false))?;
     shot(&mut h, "visualizer", &keys(&[Key::Char('6')]))?;
     h.frame(&keys(&[Key::Char('1')]), &player)?;
     h.frame(&keys(&[Key::Char('4')]), &player)?;

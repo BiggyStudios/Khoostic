@@ -1,9 +1,11 @@
-//! The right-click menu for songs: play next, queue, radio, add to playlists.
+//! Right-click menus: songs (play next, queue, radio, like, go to artist/album, add to
+//! playlists) and Your Library items (play, hide, unfollow, delete).
 
 use std::time::{Duration, Instant};
 
-use crate::gui::app::{Gui, count};
+use crate::gui::app::{Gui, View, count};
 use crate::gui::render::{Color, Rect, Weight};
+use crate::gui::sidebar::LibItem;
 use crate::gui::ui::Ui;
 use crate::gui::ui::anim::{self, ease_out};
 use crate::model::{EntryId, Track, TrackLocator};
@@ -16,22 +18,37 @@ pub(crate) enum MenuSource {
     Other,
 }
 
+/// A right-clicked Your Library item.
+#[derive(Clone)]
+pub(crate) struct LibraryMenu {
+    pub item: LibItem,
+    pub hidden: bool,
+}
+
 pub(crate) struct ContextMenu {
     pub(crate) pos: (f32, f32),
     pub(crate) tracks: Vec<Track>,
     pub(crate) source: MenuSource,
     pub(crate) opened: Instant,
+    /// Set for Your Library items (then `tracks` is empty).
+    pub(crate) library: Option<LibraryMenu>,
 }
 
 enum MenuItem {
     Radio,
     PlayNext,
     AddToQueue,
+    Like(bool),
+    GoToArtist { name: String, id: Option<String> },
     GoToAlbum,
     RemoveFromQueue(EntryId),
     RemoveFromPlaylist { id: i64, index: usize },
     ToLocal(i64),
     ToSpotify(String),
+    LibPlay,
+    LibHide(bool),
+    LibUnfollow,
+    LibDelete(i64),
 }
 
 impl Gui {
@@ -41,60 +58,53 @@ impl Gui {
             tracks,
             source,
             opened: Instant::now(),
+            library: None,
         });
+    }
+
+    pub(crate) fn open_library_menu(&mut self, m: LibraryMenu) {
+        self.menu = Some(ContextMenu {
+            pos: self.mouse,
+            tracks: Vec::new(),
+            source: MenuSource::Other,
+            opened: Instant::now(),
+            library: Some(m),
+        });
+    }
+
+    fn library_menu_items(m: &LibraryMenu) -> Vec<(String, Option<MenuItem>)> {
+        let mut items = vec![("Play".to_string(), Some(MenuItem::LibPlay))];
+        if m.item.key != "liked" {
+            items.push(if m.hidden {
+                (
+                    "Show in Your Library".into(),
+                    Some(MenuItem::LibHide(false)),
+                )
+            } else {
+                (
+                    "Hide from Your Library".into(),
+                    Some(MenuItem::LibHide(true)),
+                )
+            });
+        }
+        if m.item.artist.is_some() {
+            items.push(("Unfollow".into(), Some(MenuItem::LibUnfollow)));
+        }
+        if let View::LocalPlaylist(id) = m.item.view {
+            items.push(("Delete playlist".into(), Some(MenuItem::LibDelete(id))));
+        }
+        items
     }
 
     pub(crate) fn draw_menu(&mut self, ui: &mut Ui, player: &Player) {
         let Some(menu) = &self.menu else { return };
         let t = ui.theme.clone();
         let mut items: Vec<(String, Option<MenuItem>)> = Vec::new();
-        if menu.tracks.len() == 1 {
-            items.push(("Start radio".into(), Some(MenuItem::Radio)));
+        if let Some(m) = &menu.library {
+            items = Self::library_menu_items(m);
+        } else {
+            self.song_menu_items(menu, &mut items);
         }
-        items.extend([
-            ("Play next".into(), Some(MenuItem::PlayNext)),
-            ("Add to queue".into(), Some(MenuItem::AddToQueue)),
-        ]);
-        if menu.tracks.len() == 1
-            && menu.tracks[0].album.is_some()
-            && matches!(menu.tracks[0].locator, TrackLocator::Local(_))
-        {
-            items.push(("Go to album".into(), Some(MenuItem::GoToAlbum)));
-        }
-        match menu.source {
-            MenuSource::Queue(id) => items.push((
-                "Remove from queue".into(),
-                Some(MenuItem::RemoveFromQueue(id)),
-            )),
-            MenuSource::LocalPlaylist { id, index } => items.push((
-                "Remove from playlist".into(),
-                Some(MenuItem::RemoveFromPlaylist { id, index }),
-            )),
-            MenuSource::Other => {}
-        }
-        items.push(("Add to playlist".into(), None));
-        let before = items.len();
-        for (p, _) in &self.sp.local {
-            items.push((p.name.clone(), Some(MenuItem::ToLocal(p.id))));
-        }
-        let all_local = menu
-            .tracks
-            .iter()
-            .all(|t| !matches!(t.locator, TrackLocator::Spotify { .. }));
-        if let Some(sp) = &self.sp.playlists {
-            for p in sp.iter().filter(|p| p.owned_by_me).take(14) {
-                let label = if all_local {
-                    format!("{} (Spotify · local not allowed)", p.name)
-                } else {
-                    format!("{} (Spotify)", p.name)
-                };
-                items.push((label, Some(MenuItem::ToSpotify(p.id.clone()))));
-            }
-        }
-        if items.len() == before {
-            items.push(("No playlists yet: create one in Playlists".into(), None));
-        }
-
         const W: f32 = 272.0;
         const IH: f32 = 32.0;
         let h = items.len() as f32 * IH + 12.0;
@@ -158,7 +168,7 @@ impl Gui {
         let menu = self.menu.take().expect("checked");
         if let Some(i) = chosen {
             if let Some(item) = items.into_iter().nth(i).and_then(|(_, it)| it) {
-                self.run_menu_item(item, menu.tracks, player);
+                self.run_menu_item(item, menu.tracks, menu.library, player);
             }
         } else if !clicked_outside
             && !ui
@@ -171,9 +181,129 @@ impl Gui {
         }
     }
 
-    fn run_menu_item(&mut self, item: MenuItem, tracks: Vec<Track>, player: &Player) {
+    fn song_menu_items(&self, menu: &ContextMenu, items: &mut Vec<(String, Option<MenuItem>)>) {
+        let one = (menu.tracks.len() == 1).then(|| &menu.tracks[0]);
+        if one.is_some() {
+            items.push(("Start radio".into(), Some(MenuItem::Radio)));
+        }
+        items.extend([
+            ("Play next".into(), Some(MenuItem::PlayNext)),
+            ("Add to queue".into(), Some(MenuItem::AddToQueue)),
+        ]);
+        let all_liked = menu.tracks.iter().all(|t| self.is_liked(t));
+        items.push(if all_liked {
+            (
+                "Remove from Liked Songs".into(),
+                Some(MenuItem::Like(false)),
+            )
+        } else {
+            ("Save to Liked Songs".into(), Some(MenuItem::Like(true)))
+        });
+        if let Some(t) = one {
+            if let Some(name) = t.artists.first().filter(|a| !a.is_empty()) {
+                items.push((
+                    "Go to artist".into(),
+                    Some(MenuItem::GoToArtist {
+                        name: name.clone(),
+                        id: t.artist_id(0).map(str::to_owned),
+                    }),
+                ));
+            }
+            let has_album = match &t.locator {
+                TrackLocator::Spotify { .. } => t.album_id.is_some(),
+                _ => t.album.is_some(),
+            };
+            if has_album {
+                items.push(("Go to album".into(), Some(MenuItem::GoToAlbum)));
+            }
+        }
+        match menu.source {
+            MenuSource::Queue(id) => items.push((
+                "Remove from queue".into(),
+                Some(MenuItem::RemoveFromQueue(id)),
+            )),
+            MenuSource::LocalPlaylist { id, index } => items.push((
+                "Remove from playlist".into(),
+                Some(MenuItem::RemoveFromPlaylist { id, index }),
+            )),
+            MenuSource::Other => {}
+        }
+        items.push(("Add to playlist".into(), None));
+        let before = items.len();
+        for (p, _) in &self.sp.local {
+            items.push((p.name.clone(), Some(MenuItem::ToLocal(p.id))));
+        }
+        let all_local = menu
+            .tracks
+            .iter()
+            .all(|t| !matches!(t.locator, TrackLocator::Spotify { .. }));
+        if let Some(sp) = &self.sp.playlists {
+            for p in sp.iter().filter(|p| p.owned_by_me).take(14) {
+                let label = if all_local {
+                    format!("{} (Spotify · local not allowed)", p.name)
+                } else {
+                    format!("{} (Spotify)", p.name)
+                };
+                items.push((label, Some(MenuItem::ToSpotify(p.id.clone()))));
+            }
+        }
+        if items.len() == before {
+            items.push((
+                "No playlists yet: make one with + in Your Library".into(),
+                None,
+            ));
+        }
+    }
+
+    fn run_menu_item(
+        &mut self,
+        item: MenuItem,
+        tracks: Vec<Track>,
+        library: Option<LibraryMenu>,
+        player: &Player,
+    ) {
         let n = tracks.len();
         match item {
+            MenuItem::Like(liked) => {
+                for t in &tracks {
+                    self.set_liked(t, liked);
+                }
+            }
+            MenuItem::GoToArtist { name, id } => self.open_artist(&name, id.as_deref()),
+            MenuItem::LibPlay => {
+                if let Some(m) = library {
+                    self.play_view(&m.item.view, player);
+                }
+            }
+            MenuItem::LibHide(hide) => {
+                if let Some(m) = library {
+                    if hide {
+                        self.ui_state.hidden.insert(m.item.key.clone());
+                        self.toast(format!(
+                            "Hid “{}”: “Show hidden” at the bottom of Your Library brings it back",
+                            m.item.title
+                        ));
+                    } else {
+                        self.ui_state.hidden.remove(&m.item.key);
+                    }
+                    self.save_ui_state();
+                }
+            }
+            MenuItem::LibUnfollow => {
+                if let Some(a) = library.and_then(|m| m.item.artist) {
+                    self.toast(format!("Unfollowed {}", a.name));
+                    self.set_following(a, false);
+                }
+            }
+            MenuItem::LibDelete(id) => match self.library.delete_playlist(id) {
+                Ok(()) => {
+                    self.toast("Deleted the playlist");
+                    if self.view == View::LocalPlaylist(id) {
+                        self.switch(View::Albums);
+                    }
+                }
+                Err(e) => self.toast(format!("Couldn't delete: {e:#}")),
+            },
             MenuItem::Radio => {
                 if let Some(t) = tracks.into_iter().next() {
                     self.start_radio(t);

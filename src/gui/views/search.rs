@@ -1,17 +1,40 @@
-//! Search across the library and Spotify: album cards, then one song list.
+//! Search across your library and Spotify, laid out like Spotify's: tabs (All, Songs,
+//! Artists, Albums, Your library); "All" shows a top result beside the top songs, then rows of
+//! artists and albums.
+//!
+//! Library results update on every keystroke. Spotify results follow a short debounce, and
+//! the previous ones stay up meanwhile, so the page never blanks while typing.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::audio::AnalysisFrame;
-use crate::gui::app::{Gui, SearchMode, View, count};
-use crate::gui::render::{Color, Rect, Weight};
+use crate::gui::app::{Gui, SearchTab, View};
+use crate::gui::render::{Rect, Weight};
 use crate::gui::ui::icons::{self, Icon};
 use crate::gui::ui::{Ui, anim};
 use crate::gui::views::lists::{TrackListStyle, column_header};
+use crate::gui::views::page::{Card, SONG_H, SongAction, chips, play_button, section_title};
 use crate::gui::views::{empty_state, spotify_green};
-use crate::library::{Album, CoverSize};
-use crate::model::Track;
-use crate::player::{Player, PlayerSnapshot};
+use crate::library::CoverSize;
+use crate::model::matching::{normalize, song_key, track_key};
+use crate::model::{Track, TrackLocator};
+use crate::player::{Player, PlayerCommand as Cmd, PlayerSnapshot};
+use crate::spotify::SearchResults;
+
+const TABS: [(SearchTab, &str); 5] = [
+    (SearchTab::All, "All"),
+    (SearchTab::Songs, "Songs"),
+    (SearchTab::Artists, "Artists"),
+    (SearchTab::Albums, "Albums"),
+    (SearchTab::Library, "Your library"),
+];
+
+/// The best match, shown big.
+enum Top {
+    Artist(Card),
+    Song(Track),
+}
 
 impl Gui {
     pub(crate) fn search_view(
@@ -24,75 +47,95 @@ impl Gui {
     ) {
         let t = ui.theme.clone();
         let q = self.search.text.trim().to_string();
-        let sp_ok = self.spotify.as_ref().is_some_and(|s| s.is_connected());
-        let mode = if sp_ok {
-            self.search_mode
+        let nq = normalize(&q);
+        let connected = self.spotify_connected();
+        let tab = if connected || self.search_tab != SearchTab::Library {
+            self.search_tab
         } else {
-            SearchMode::Library
+            SearchTab::All
         };
 
-        // Library matches (cached per query).
-        let lib: Arc<Vec<Track>> = if mode == SearchMode::Spotify {
-            Arc::new(Vec::new())
-        } else {
-            match &self.cache.lib_search {
-                Some((cq, res)) if *cq == q => res.clone(),
-                _ => {
-                    let res = Arc::new(self.library.search(&q, 300));
-                    self.cache.lib_search = Some((q.clone(), res.clone()));
-                    res
-                }
+        // Library matches: instant, cached per query.
+        let lib: Arc<Vec<Track>> = match &self.cache.lib_search {
+            Some((cq, res)) if *cq == q => res.clone(),
+            _ => {
+                let res = Arc::new(self.library.search(&q, 300));
+                self.cache.lib_search = Some((q.clone(), res.clone()));
+                res
             }
         };
-        let ql = q.to_lowercase();
-        let lib_albums: Vec<Album> = if mode == SearchMode::Spotify {
-            Vec::new()
-        } else {
-            self.cache
-                .albums
-                .iter()
-                .filter(|al| {
-                    al.name.to_lowercase().contains(&ql)
-                        || al
-                            .artist
-                            .as_deref()
-                            .is_some_and(|a| a.to_lowercase().contains(&ql))
-                })
-                .take(12)
-                .cloned()
-                .collect()
+        let matches = |s: &str| {
+            let n = normalize(s);
+            !nq.is_empty() && n.contains(&nq)
         };
+        let lib_albums: Vec<Card> = self
+            .cache
+            .albums
+            .iter()
+            .filter(|al| matches(&al.name) || al.artist.as_deref().is_some_and(matches))
+            .take(24)
+            .map(|al| Card {
+                title: al.name.clone(),
+                subtitle: match (al.year, &al.artist) {
+                    (Some(y), Some(ar)) => format!("{y} · {ar}"),
+                    (_, Some(ar)) => ar.clone(),
+                    _ => "Album".into(),
+                },
+                cover: al.cover.clone(),
+                round: false,
+                spotify: false,
+                open: View::Album {
+                    name: al.name.clone(),
+                    artist: al.artist.clone(),
+                },
+            })
+            .collect();
+        let lib_artists: Vec<(String, Option<crate::model::CoverRef>)> = self
+            .cache
+            .artists
+            .iter()
+            .filter(|ar| matches(&ar.name))
+            .take(24)
+            .map(|ar| {
+                let cover = self
+                    .cache
+                    .albums
+                    .iter()
+                    .find(|al| al.artist.as_deref() == Some(ar.name.as_str()))
+                    .and_then(|al| al.cover.clone());
+                (ar.name.clone(), cover)
+            })
+            .collect();
 
-        // Spotify matches (debounced, in the background; stale results are hidden).
-        let sp = if mode != SearchMode::Library {
-            self.spotify_search(&q);
-            self.sp
-                .search
-                .as_ref()
-                .filter(|(sq, _)| *sq == q)
-                .map(|(_, res)| res.clone())
-        } else {
+        // Spotify matches (debounced in the background).
+        let sp: Option<(bool, Arc<SearchResults>)> = if tab == SearchTab::Library {
             None
+        } else {
+            self.spotify_search(&q)
         };
-        let sp_loading = mode != SearchMode::Library && sp.is_none() && !q.is_empty();
+        let loading = connected && tab != SearchTab::Library && !sp.as_ref().is_some_and(|s| s.0);
+        let sp = sp.map(|s| s.1);
+        if let Some(res) = &sp {
+            let ids: Vec<String> = res.artists.iter().take(12).map(|a| a.id.clone()).collect();
+            self.want_artist_pics(&ids);
+        }
 
-        // One list: library first, then Spotify songs you don't already have.
+        // Songs: library first, then Spotify songs you don't already have.
         let key = format!(
-            "{mode:?}|{q}|{}|{}",
+            "{q}|{}|{}",
             lib.len(),
             sp.as_ref().map_or(0, |s| Arc::as_ptr(s) as usize)
         );
-        let tracks = match &self.cache.search {
-            Some((k, t)) if *k == key => t.clone(),
+        let songs = match &self.cache.search {
+            Some((k, s)) if *k == key => s.clone(),
             _ => {
                 let mut all: Vec<Track> = lib.to_vec();
                 if let Some(sp) = &sp {
-                    let have: std::collections::HashSet<_> =
-                        all.iter().map(crate::model::matching::track_key).collect();
+                    let have: HashSet<_> = all.iter().map(track_key).collect();
                     all.extend(
                         sp.tracks
                             .iter()
-                            .filter(|t| !have.contains(&crate::model::matching::track_key(t)))
+                            .filter(|t| !have.contains(&track_key(t)))
                             .cloned(),
                     );
                 }
@@ -101,180 +144,385 @@ impl Gui {
                 all
             }
         };
-        let mut cards: Vec<SearchCard> = lib_albums
+
+        self.cache.search_shown = Some(songs.clone());
+
+        // Artists: Spotify's (with pictures), then library ones Spotify didn't list.
+        let mut artists: Vec<Card> = Vec::new();
+        let mut seen = HashSet::new();
+        if let Some(res) = &sp {
+            for ar in &res.artists {
+                let pic = self
+                    .sp
+                    .artist_pics
+                    .get(&ar.id)
+                    .and_then(|p| p.image.clone());
+                seen.insert(normalize(&ar.name));
+                artists.push(Card {
+                    title: ar.name.clone(),
+                    subtitle: "Artist".into(),
+                    cover: pic,
+                    round: true,
+                    spotify: false,
+                    open: View::SpotifyArtist {
+                        id: ar.id.clone(),
+                        name: ar.name.clone(),
+                    },
+                });
+            }
+        }
+        // Library artists first when they match better than Spotify's guesses.
+        let mut local_artists: Vec<Card> = lib_artists
             .iter()
-            .map(|al| SearchCard {
-                title: al.name.clone(),
-                subtitle: al.artist.clone().unwrap_or_default(),
-                cover: al.cover.clone(),
+            .filter(|(name, _)| !seen.contains(&normalize(name)))
+            .map(|(name, cover)| Card {
+                title: name.clone(),
+                subtitle: "Artist · in your library".into(),
+                cover: cover.clone(),
+                round: true,
                 spotify: false,
-                open: View::Album {
-                    name: al.name.clone(),
-                    artist: al.artist.clone(),
-                },
+                open: View::Artist(name.clone()),
             })
             .collect();
-        if let Some(sp) = &sp {
-            use crate::model::matching::song_key;
-            // Albums you already have locally are shown once, as yours.
-            let have: std::collections::HashSet<_> = lib_albums
+        local_artists.append(&mut artists);
+        let artists = local_artists;
+
+        // Albums: yours, then Spotify's you don't have.
+        let mut albums = lib_albums;
+        if let Some(res) = &sp {
+            let have: HashSet<_> = albums
                 .iter()
-                .map(|al| song_key(al.artist.as_deref().unwrap_or_default(), &al.name))
+                .map(|c| song_key(&c.subtitle, &c.title))
                 .collect();
-            let fresh = sp.albums.iter().filter(|al| {
-                !have.contains(&song_key(
-                    al.artist.as_deref().unwrap_or_default(),
-                    &al.name,
-                ))
-            });
-            cards.extend(fresh.take(12).map(|al| SearchCard {
-                title: al.name.clone(),
-                subtitle: al.artist.clone().unwrap_or_default(),
-                cover: al.cover.clone(),
-                spotify: true,
-                open: View::SpotifyAlbum {
-                    id: al.id.clone(),
-                    name: al.name.clone(),
-                },
-            }));
+            albums.extend(
+                res.albums
+                    .iter()
+                    .filter(|al| {
+                        !have.contains(&song_key(
+                            al.artist.as_deref().unwrap_or_default(),
+                            &al.name,
+                        ))
+                    })
+                    .map(|al| Card {
+                        title: al.name.clone(),
+                        subtitle: match (al.year, &al.artist) {
+                            (Some(y), Some(ar)) => format!("{y} · {ar}"),
+                            (_, Some(ar)) => ar.clone(),
+                            _ => "Album".into(),
+                        },
+                        cover: al.cover.clone(),
+                        round: false,
+                        spotify: false,
+                        open: View::SpotifyAlbum {
+                            id: al.id.clone(),
+                            name: al.name.clone(),
+                        },
+                    }),
+            );
         }
 
-        let n_sp = tracks.len() - lib.len().min(tracks.len());
-        let mut sub = match mode {
-            SearchMode::Spotify => format!("{} on Spotify", count(tracks.len(), "song")),
-            SearchMode::All => format!("{} · {} from Spotify", count(tracks.len(), "song"), n_sp),
-            SearchMode::Library => count(tracks.len(), "song"),
-        };
-        if sp_loading {
-            sub.push_str(" · searching Spotify…");
+        // Tabs.
+        let labels: Vec<&str> = TABS
+            .iter()
+            .filter(|(tb, _)| connected || *tb != SearchTab::Library)
+            .map(|(_, l)| *l)
+            .collect();
+        let active = TABS.iter().position(|(tb, _)| *tb == tab).unwrap_or(0);
+        if let Some(i) = chips(ui, r.x, r.y, &labels, active) {
+            self.search_tab = TABS[i].0;
+            self.list("search").selected = 0;
+            self.list("search-page").target = 0.0;
         }
-        let body = self.header(ui, r, &format!("“{q}”"), &sub);
-        if sp_ok {
-            let size = t.font_size - 1.0;
-            let labels = ["All", "Library", "Spotify"];
-            let seg_w = labels
-                .iter()
-                .map(|l| ui.measure(l, size, Weight::Medium))
-                .fold(0.0, f32::max)
-                + 30.0;
-            let x = r.right() - 3.0 * seg_w - 6.0;
-            let sel = self.search_mode as usize;
-            if let Some(i) = ui.segmented(anim::id("search-mode"), x, r.y + 4.0, &labels, sel) {
-                self.search_mode = [SearchMode::All, SearchMode::Library, SearchMode::Spotify][i];
-                self.list("search").selected = 0;
-            }
+        if loading {
+            // A small spinner after the tabs while Spotify answers.
+            ui.anim.keep_alive();
+            let a0 = spin_angle();
+            ui.c.arc(r.right() - 12.0, r.y + 16.0, 7.0, a0, a0 + 4.2, 2.0, t.dim);
         }
-        if tracks.is_empty() && cards.is_empty() {
-            if sp_loading {
+        let body = Rect::new(r.x, r.y + 52.0, r.w, (r.h - 52.0).max(0.0));
+
+        let nothing = songs.is_empty() && artists.is_empty() && albums.is_empty();
+        if nothing {
+            if loading {
                 return;
             }
-            let hint = if sp_ok {
-                "Nothing in your library or on Spotify matches"
+            let hint = if connected {
+                "Check the spelling, or try fewer words"
             } else {
                 "Search looks at titles, artists and albums. Connect Spotify to search everything"
             };
-            return empty_state(ui, body, "No matches", hint);
+            return empty_state(ui, body, &format!("No results for “{q}”"), hint);
         }
-        let mut list = body;
-        if !cards.is_empty() {
-            let strip_h = 236.0f32.min(body.h * 0.45);
-            let strip = Rect::new(body.x, body.y, body.w, strip_h);
-            if let Some(view) = self.search_cards(ui, strip, &cards) {
-                self.navigate(view);
+
+        match tab {
+            SearchTab::Songs | SearchTab::Library => {
+                let list: Arc<Vec<Track>> = if tab == SearchTab::Library {
+                    lib.clone()
+                } else {
+                    songs.clone()
+                };
+                self.cache.search_shown = Some(list.clone());
+                if list.is_empty() {
+                    return empty_state(ui, body, "No songs", "Try the other tabs");
+                }
+                let list_r = column_header(ui, body, true, true);
+                let style = TrackListStyle {
+                    covers: true,
+                    album_column: true,
+                    track_numbers: false,
+                };
+                let action = self.track_list(ui, list_r, "search", &list, style, snap, a);
+                self.apply_row_action(action, &list, player);
             }
-            list = Rect::new(body.x, body.y + strip_h, body.w, body.h - strip_h);
-        }
-        if !tracks.is_empty() {
-            let list = column_header(ui, list, true, true);
-            let style = TrackListStyle {
-                covers: true,
-                album_column: true,
-                track_numbers: false,
-            };
-            let action = self.track_list(ui, list, "search", &tracks, style, snap, a);
-            self.apply_row_action(action, &tracks, player);
+            SearchTab::Artists | SearchTab::Albums => {
+                let cards = if tab == SearchTab::Artists {
+                    &artists
+                } else {
+                    &albums
+                };
+                let mut y = self.page_begin(ui, body, "search-page");
+                let (open, play, h) = self.card_grid(ui, body.x, y, body.w, "search-grid", cards);
+                y += h;
+                self.page_end(ui, body, "search-page", y);
+                self.card_clicked(cards, open, play, player);
+            }
+            SearchTab::All => {
+                let top = top_result(&nq, &artists, &songs);
+                let mut y = self.page_begin(ui, body, "search-page");
+                y = self.top_and_songs(ui, body, y, top, &songs, player, snap, a);
+                if !artists.is_empty() {
+                    y += 28.0;
+                    let all = section_title(ui, body.x, y, body.w, "Artists", Some("Show all"));
+                    if all {
+                        self.search_tab = SearchTab::Artists;
+                    }
+                    y += 40.0;
+                    let (open, play, h) = self.card_row(
+                        ui,
+                        body.x - 12.0,
+                        y,
+                        body.w + 24.0,
+                        "search-artists",
+                        &artists,
+                    );
+                    self.card_clicked(&artists, open, play, player);
+                    y += h;
+                }
+                if !albums.is_empty() {
+                    y += 16.0;
+                    let all = section_title(ui, body.x, y, body.w, "Albums", Some("Show all"));
+                    if all {
+                        self.search_tab = SearchTab::Albums;
+                    }
+                    y += 40.0;
+                    let (open, play, h) = self.card_row(
+                        ui,
+                        body.x - 12.0,
+                        y,
+                        body.w + 24.0,
+                        "search-albums",
+                        &albums,
+                    );
+                    self.card_clicked(&albums, open, play, player);
+                    y += h;
+                }
+                self.page_end(ui, body, "search-page", y);
+            }
         }
     }
 
-    /// A row of album cards (library and Spotify); returns the view to open when one is clicked.
-    fn search_cards(&mut self, ui: &mut Ui, strip: Rect, cards: &[SearchCard]) -> Option<View> {
+    /// Opens or plays a clicked card.
+    pub(crate) fn card_clicked(
+        &mut self,
+        cards: &[Card],
+        open: Option<usize>,
+        play: Option<usize>,
+        player: &Player,
+    ) {
+        if let Some(c) = play.and_then(|i| cards.get(i)) {
+            let v = c.open.clone();
+            self.play_view(&v, player);
+        } else if let Some(c) = open.and_then(|i| cards.get(i)) {
+            match &c.open {
+                View::SpotifyArtist { id, name } => {
+                    let (id, name) = (id.clone(), name.clone());
+                    self.open_artist(&name, Some(&id));
+                }
+                v => {
+                    let v = v.clone();
+                    self.navigate(v);
+                }
+            }
+        }
+    }
+
+    /// The top result card beside the first four songs (stacked on narrow pages). Returns
+    /// the y below them.
+    fn top_and_songs(
+        &mut self,
+        ui: &mut Ui,
+        body: Rect,
+        y: f32,
+        top: Option<Top>,
+        songs: &Arc<Vec<Track>>,
+        player: &Player,
+        snap: &PlayerSnapshot,
+        a: &AnalysisFrame,
+    ) -> f32 {
+        let wide = body.w >= 760.0;
+        let top_w = if wide {
+            (body.w * 0.42).min(460.0)
+        } else {
+            body.w
+        };
+        let mut bottom = y;
+        if let Some(top) = &top {
+            section_title(ui, body.x, y, top_w, "Top result", None);
+            let card = Rect::new(body.x, y + 44.0, top_w, 228.0);
+            self.top_card(ui, card, top, player);
+            bottom = card.bottom();
+        }
+        let (sx, sy, sw) = if wide || top.is_none() {
+            let x = if top.is_some() {
+                body.x + top_w + 24.0
+            } else {
+                body.x
+            };
+            (x, y, body.right() - x)
+        } else {
+            (body.x, bottom + 24.0, body.w)
+        };
+        let n = songs.len().min(4);
+        if n > 0 {
+            section_title(ui, sx, sy, sw, "Songs", None);
+            let rows = Rect::new(sx, sy + 44.0, sw, n as f32 * SONG_H);
+            if let SongAction::Play(i) =
+                self.song_rows(ui, rows, "search-top-songs", &songs[..n], None, snap, a)
+            {
+                player.send(Cmd::PlayTracks {
+                    tracks: songs.to_vec(),
+                    start: i,
+                });
+            }
+            bottom = bottom.max(rows.bottom());
+        }
+        bottom
+    }
+
+    fn top_card(&mut self, ui: &mut Ui, r: Rect, top: &Top, player: &Player) {
         let t = ui.theme.clone();
-        const TILE: f32 = 150.0;
-        let mut open = None;
-        ui.c.push_clip(Rect::new(
-            strip.x - 10.0,
-            strip.y - 6.0,
-            strip.w + 20.0,
-            strip.h + 6.0,
-        ));
-        for (i, card) in cards.iter().enumerate() {
-            let x = strip.x + i as f32 * (TILE + 18.0);
-            if x > strip.right() {
-                break;
-            }
-            let hover = ui.hovered(Rect::new(x, strip.y, TILE, TILE + 48.0));
-            let h = ui
-                .anim
-                .to(anim::id(("card", i)), hover as u8 as f32, anim::FAST);
-            ui.pointer |= hover;
-            let cover = Rect::new(x, strip.y + 4.0 - 4.0 * h, TILE, TILE);
-            if h > 0.01 {
-                ui.c.glow(
-                    Rect::new(cover.x + 4.0, cover.y + 10.0, cover.w - 8.0, cover.h - 6.0),
-                    Color::BLACK.alpha(0.55 * h),
-                    t.radius,
-                    16.0,
-                );
-            }
-            ui.cover(
-                cover,
-                card.cover.as_ref(),
-                CoverSize::Large,
-                t.radius,
-                &card.title,
-            );
-            let mut tx = x;
-            if card.spotify {
-                icons::draw(
-                    ui.c,
-                    Icon::Spotify,
-                    Rect::new(x, strip.y + TILE + 11.0, 13.0, 13.0),
-                    spotify_green(),
-                );
-                tx += 18.0;
-            }
+        let id = anim::id("search-top");
+        let hover = ui.hovered(r);
+        let h = ui.anim.to(id, hover as u8 as f32, anim::FAST);
+        ui.pointer |= hover;
+        ui.c.rect(r, t.wash(0.05 + 0.04 * h), t.radius + 4.0);
+        let img = Rect::new(r.x + 20.0, r.y + 20.0, 96.0, 96.0);
+        let (title, kind, sub, cover, round, spotify) = match top {
+            Top::Artist(c) => (
+                c.title.clone(),
+                "Artist",
+                String::new(),
+                c.cover.clone(),
+                true,
+                matches!(c.open, View::SpotifyArtist { .. }),
+            ),
+            Top::Song(tr) => (
+                tr.title.clone(),
+                "Song",
+                tr.artist_line(),
+                tr.cover.clone(),
+                false,
+                matches!(tr.locator, TrackLocator::Spotify { .. }),
+            ),
+        };
+        let radius = if round { 48.0 } else { 6.0 };
+        ui.c.glow(
+            Rect::new(img.x + 4.0, img.y + 8.0, img.w - 8.0, img.h - 4.0),
+            crate::gui::render::Color::BLACK.alpha(0.45),
+            radius,
+            14.0,
+        );
+        ui.cover(img, cover.as_ref(), CoverSize::Large, radius, &title);
+        ui.label(
+            &title,
+            r.x + 20.0,
+            Rect::new(r.x + 20.0, img.bottom() + 16.0, r.w - 40.0, 40.0),
+            r.w - 40.0,
+            30.0,
+            Weight::Bold,
+            t.fg,
+        );
+        // "Song · Artist" with a pill for the kind, like Spotify.
+        let ky = img.bottom() + 62.0;
+        let mut x = r.x + 20.0;
+        if !sub.is_empty() {
             ui.label(
-                &card.title,
-                tx,
-                Rect::new(x, strip.y + TILE + 8.0, TILE, 20.0),
-                TILE - (tx - x),
-                t.font_size - 0.5,
-                Weight::Medium,
-                t.fg,
-            );
-            ui.label(
-                &card.subtitle,
+                &sub,
                 x,
-                Rect::new(x, strip.y + TILE + 28.0, TILE, 18.0),
-                TILE,
-                12.0,
+                Rect::new(x, ky, r.w - 160.0, 24.0),
+                r.w - 170.0,
+                13.5,
                 Weight::Regular,
                 t.dim,
             );
-            if hover && ui.input.pressed {
-                open = Some(card.open.clone());
+            x += ui.measure(&sub, 13.5, Weight::Regular).min(r.w - 170.0) + 10.0;
+        }
+        let kw = ui.measure(kind, 12.5, Weight::Bold) + 20.0;
+        let pill = Rect::new(x, ky, kw, 24.0);
+        ui.c.rect(pill, t.background.alpha(0.7), 12.0);
+        ui.label_center(kind, pill, 12.5, Weight::Bold, t.fg);
+        if spotify {
+            icons::draw(
+                ui.c,
+                Icon::Spotify,
+                Rect::new(pill.right() + 10.0, ky + 5.0, 14.0, 14.0),
+                spotify_green(),
+            );
+        }
+        let cover_for_button = Rect::new(r.right() - 76.0, r.bottom() - 76.0, 68.0, 68.0);
+        let on_play = play_button(ui, id, cover_for_button, h);
+        if hover && ui.input.pressed {
+            match top {
+                Top::Artist(c) => {
+                    if on_play {
+                        let v = c.open.clone();
+                        self.play_view(&v, player);
+                    } else {
+                        self.card_clicked(std::slice::from_ref(c), Some(0), None, player);
+                    }
+                }
+                Top::Song(tr) => {
+                    if on_play {
+                        player.send(Cmd::PlayTracks {
+                            tracks: vec![tr.clone()],
+                            start: 0,
+                        });
+                    } else {
+                        let tr = tr.clone();
+                        self.open_album_of(&tr);
+                    }
+                }
             }
         }
-        ui.c.pop_clip();
-        open
     }
 }
 
-/// An album on the search page, from the library or Spotify.
-struct SearchCard {
-    title: String,
-    subtitle: String,
-    cover: Option<crate::model::CoverRef>,
-    spotify: bool,
-    open: View,
+/// An artist whose name is what was typed (or starts with it), else the first song.
+fn top_result(nq: &str, artists: &[Card], songs: &[Track]) -> Option<Top> {
+    let artist = artists.iter().find(|c| {
+        let n = normalize(&c.title);
+        n == nq || (nq.chars().count() >= 3 && n.starts_with(nq))
+    });
+    match artist {
+        Some(c) => Some(Top::Artist(c.clone())),
+        None => songs.first().cloned().map(Top::Song),
+    }
+}
+
+/// Angle for loading spinners: one turn every ~0.9 s.
+pub(crate) fn spin_angle() -> f32 {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() % 900) as f32;
+    ms / 900.0 * std::f32::consts::TAU
 }

@@ -12,17 +12,19 @@ only uses the ones listed above it here (keep it that way; no cycles back up).
 
 | Module | Owns |
 |---|---|
-| `model/` | `Track`, `TrackLocator` (+ URI form), `CoverRef`, `Queue`, song matching, natural sort. **No I/O.** |
+| `model/` | `Track`, `TrackLocator` (+ URI form), `CoverRef`, `Queue`, `Lyrics` (+ LRC parsing), song matching and `normalize`, natural sort. **No I/O.** |
 | `pending.rs` | `Pending<T>`: a background result the UIs poll once per frame |
 | `config.rs` | `config.toml` model; every field defaults, unknown keys are errors; `save_value` edits one key in place |
 | `audio/` | `AudioSource` trait, symphonia decoding, `Conditioner` (stereo + rubato), engine thread, cpal output, FFT analysis feed |
 | `player/` | `Player` controller (queue ↔ engine, gapless preload), `SourceResolver`s, file browser model |
-| `library/` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists |
-| `spotify/` | Browser sign-in (OAuth PKCE, cancellable local listener), library & search over Spotify's client API (spclient), librespot streaming as an `AudioSource`, `SpotifyResolver` |
+| `library/` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists, liked local songs |
+| `spotify/` | Browser sign-in (OAuth PKCE, cancellable local listener), library, search and lyrics over Spotify's client API (spclient, `api.rs`), artist pages (`artist.rs`), liked songs and followed artists (`collection.rs`), librespot streaming as an `AudioSource`, `SpotifyResolver` |
+| `genres.rs` | Artist genres from MusicBrainz, falling back to Deezer's public API |
 | `lastfm/` | Signed API client, browser sign-in, scrobble rules (`tracker.rs`, pure), background scrobbler with a persisted offline queue, similar tracks |
 | `discovery.rs` | Song radio (Spotify radio + Last.fm similar, matched to local files first, library-only fallback) and the autoplay watcher |
+| `lyrics.rs` | Lyrics providers in configured order: local `.lrc` / tags, Spotify (also for matched local songs), LRCLIB |
 | `services.rs` | `Services::start`: library, Spotify, Last.fm, player and discovery wired together; `Launch` (paths from the command line) |
-| `gui/` | `window.rs` event loop + frame pacing, `headless.rs` offscreen; `app.rs` state + frame layout (top bar, library panel, page, queue panel, player bar: `top_bar.rs`, `sidebar.rs`, `queue_panel.rs`, `player_bar.rs`), `menu.rs`, `spotify.rs` (Spotify data); `views/` one file per page (+ `lists.rs` track rows, `grid.rs` cover tiles); `ui/` widgets, `anim.rs`, `icons.rs`, `text_field.rs`; `render/` canvas, SDF painter (boxes, triangles, lines, arcs), images, glyphon text, wgpu (Vulkan only) |
+| `gui/` | `window.rs` event loop + frame pacing + the borderless window (resize edges, drag), `headless.rs` offscreen; `app.rs` state + frame layout (title bar with window buttons, Your Library panel, page, queue panel, player bar: `top_bar.rs`, `sidebar.rs`, `queue_panel.rs`, `player_bar.rs`), `menu.rs` (song and library menus), `spotify.rs` (online data: Spotify, lyrics, genres), `state.rs` (panel state saved to `gui-state.json`); `views/` one file per page (+ `lists.rs` track rows, `grid.rs` cover tiles, `page.rs` whole-page scrolling, cards, two-line song rows); `ui/` widgets, `anim.rs`, `icons.rs`, `text_field.rs`; `render/` canvas, SDF painter (boxes, triangles, lines, arcs), images, glyphon text, wgpu (Vulkan only) |
 | `tui/` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
 | `main.rs` | CLI: `khoostic [paths] [--tui] [--play] [--shuffle]`, `devices`, `config`, `spotify`/`lastfm` `login/logout/status` |
 
@@ -82,7 +84,12 @@ cargo run --example library_scan -- <music dir> <scratch dir>
   which is permanently rate-limited there (every call is a 429). Go through the librespot
   session's spclient (context-resolve, extended-metadata, playlist v2), as `api.rs` does.
   Track radio (`get_radio_for_track`) works; Last.fm/ListenBrainz can add more recommendations.
-  Local tracks can never be added to Spotify playlists.
+  Local tracks can never be added to Spotify playlists. Endpoints known to work: search is the
+  `spotify:search:<q>` context (the old `searchview` endpoints are gone); artist pages are
+  `/artistview/v1/artist/<id>?platform=android&locale=en&country=` (monthly listeners, play
+  counts, related); likes and follows are `/collection/v2/{paging,write}` with content type
+  `application/vnd.collection-v2.spotify.proto`; lyrics are `/color-lyrics/v2/track/<id>` with an
+  `app-platform: WebPlayer` header. Check changes that write to the account with the user first.
 
 ## Repo hygiene
 
