@@ -509,8 +509,15 @@ impl SourceResolver for SpotifyResolver {
             let parts = source::fetch(&session, &id, bitrate).await?;
             anyhow::Ok((session, parts))
         });
-        let (session, (file, len, duration)) =
-            fetched.map_err(|e| SourceError::Unsupported(format!("{e:#}")))?;
+        // Anything but a track that can't be played (throttled key requests, network trouble,
+        // a dropped session) is worth another try in a moment.
+        let (session, (file, len, duration)) = fetched.map_err(|e| {
+            if e.downcast_ref::<source::NotPlayable>().is_some() {
+                SourceError::Unsupported(format!("{e:#}"))
+            } else {
+                SourceError::Unavailable(format!("{e:#}"))
+            }
+        })?;
         let src = source::open_decoder(session, file, len, duration)
             .map_err(|e| SourceError::Decode(format!("{e:#}")))?;
         Ok(Box::new(src))

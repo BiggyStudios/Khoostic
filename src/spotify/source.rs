@@ -5,7 +5,7 @@
 use std::io::{self, Read, Seek, SeekFrom};
 use std::time::Duration;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_core::{Session, SpotifyId, SpotifyUri};
 use librespot_metadata::audio::{AudioFileFormat, AudioItem};
@@ -129,6 +129,11 @@ impl AudioSource for SpotifySource {
     }
 }
 
+/// This track can't be played (as opposed to Spotify being briefly unreachable).
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct NotPlayable(pub String);
+
 /// Network part of opening a track (must run on the tokio runtime).
 pub(crate) async fn fetch(
     session: &Session,
@@ -136,13 +141,13 @@ pub(crate) async fn fetch(
     bitrate: Bitrate,
 ) -> anyhow::Result<(AudioDecrypt<AudioFile>, u64, Duration)> {
     let spotify_id =
-        SpotifyId::from_base62(id).map_err(|e| anyhow::anyhow!("bad Spotify id {id}: {e}"))?;
+        SpotifyId::from_base62(id).map_err(|e| NotPlayable(format!("bad Spotify id {id}: {e}")))?;
     let uri = SpotifyUri::Track { id: spotify_id };
     let mut item = AudioItem::get_file(session, uri)
         .await
         .context("loading track metadata")?;
     if let Err(e) = &item.availability {
-        bail!("not available: {e}");
+        return Err(NotPlayable(format!("not available: {e}")).into());
     }
     // Region-locked tracks often have a playable alternative.
     if item.files.is_empty() {
@@ -157,13 +162,15 @@ pub(crate) async fn fetch(
                 break;
             }
         }
-        item = found.context("no playable version of this track in your region")?;
+        item = found.ok_or_else(|| {
+            NotPlayable("no playable version of this track in your region".into())
+        })?;
     }
     let (format, file_id) = bitrate
         .formats()
         .iter()
         .find_map(|f| item.files.get(f).map(|id| (*f, *id)))
-        .context("no Ogg Vorbis stream for this track")?;
+        .ok_or_else(|| NotPlayable("no Ogg Vorbis stream for this track".into()))?;
     let track_id: SpotifyId = (&item.track_id)
         .try_into()
         .map_err(|_| anyhow::anyhow!("bad track id"))?;

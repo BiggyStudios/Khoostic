@@ -5,6 +5,7 @@
 //! frontend interchangeable and makes remote control (MPD, listen-along) a thin layer.
 
 pub mod browse;
+mod open;
 pub mod resolve;
 
 use std::sync::Arc;
@@ -14,16 +15,20 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender, select};
 use parking_lot::RwLock;
 
+use crate::audio::SourceError;
 use crate::audio::{
     AnalysisFrame, Command, EngineConfig, EngineEvent, EngineHandle, PlaybackState,
 };
 use crate::model::{EntryId, Queue, QueueEntry, RepeatMode, Track};
+use open::{Job, Opened, Purpose};
 
 pub use crate::audio::PlaybackState as State;
 pub use resolve::{LocalFiles, Resolvers, SourceResolver};
 
 /// "Previous" restarts the current track if we're further in than this.
 const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
+/// After this many songs in a row fail to open, stop instead of trying the rest of the queue.
+const MAX_FAILURES_IN_ROW: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub enum PlayerCommand {
@@ -87,6 +92,8 @@ pub struct PlayerSnapshot {
     pub buffered: Duration,
     pub sample_rate: u32,
     pub device: String,
+    /// `current` is still being opened (fetched, for streams); the engine is behind it.
+    pub loading: bool,
 }
 
 pub struct Player {
@@ -95,6 +102,7 @@ pub struct Player {
     events: Receiver<PlayerEvent>,
     engine: Arc<EngineHandle>,
     queue: Arc<RwLock<Queue>>,
+    loading: Arc<RwLock<Option<EntryId>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -105,18 +113,25 @@ impl Player {
         let (tx, rx) = crossbeam_channel::unbounded();
         let (stop, stop_rx) = crossbeam_channel::bounded(1);
         let (ev_tx, events) = crossbeam_channel::unbounded();
+        let (jobs, opened) = open::spawn(resolvers)?;
+        let loading = Arc::new(RwLock::new(None));
 
         let mut ctl = Controller {
             engine: engine.clone(),
             queue: queue.clone(),
-            resolvers,
             events: ev_tx,
+            jobs,
+            ticket: 0,
+            loading: None,
+            shown_loading: loading.clone(),
+            preloading: None,
             preloaded: None,
             active: false,
+            failures: 0,
         };
         let thread = thread::Builder::new()
             .name("khoostic-player".into())
-            .spawn(move || ctl.run(rx, stop_rx))?;
+            .spawn(move || ctl.run(rx, stop_rx, opened))?;
 
         Ok(Self {
             tx,
@@ -124,6 +139,7 @@ impl Player {
             events,
             engine,
             queue,
+            loading,
             thread: Some(thread),
         })
     }
@@ -146,7 +162,7 @@ impl Player {
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
-        snapshot(&self.engine, &self.queue)
+        snapshot(&self.engine, &self.queue, &self.loading)
     }
 
     /// A cheap, cloneable handle for background services (scrobbling, autoplay) that need
@@ -156,6 +172,7 @@ impl Player {
             tx: self.tx.clone(),
             engine: self.engine.clone(),
             queue: self.queue.clone(),
+            loading: self.loading.clone(),
         }
     }
 }
@@ -166,6 +183,7 @@ pub struct PlayerHandle {
     tx: Sender<PlayerCommand>,
     engine: Arc<EngineHandle>,
     queue: Arc<RwLock<Queue>>,
+    loading: Arc<RwLock<Option<EntryId>>>,
 }
 
 impl PlayerHandle {
@@ -174,7 +192,7 @@ impl PlayerHandle {
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
-        snapshot(&self.engine, &self.queue)
+        snapshot(&self.engine, &self.queue, &self.loading)
     }
 
     pub fn queue(&self) -> &RwLock<Queue> {
@@ -182,10 +200,30 @@ impl PlayerHandle {
     }
 }
 
-fn snapshot(engine: &EngineHandle, queue: &RwLock<Queue>) -> PlayerSnapshot {
+fn snapshot(
+    engine: &EngineHandle,
+    queue: &RwLock<Queue>,
+    loading: &RwLock<Option<EntryId>>,
+) -> PlayerSnapshot {
     {
         let st = engine.status();
         let q = queue.read();
+        // A song being opened shows right away, at its start.
+        if let Some(e) = loading.read().and_then(|id| q.get(id).cloned()) {
+            return PlayerSnapshot {
+                state: st.state,
+                position: Duration::ZERO,
+                duration: e.track.duration,
+                current: Some(e),
+                volume: st.volume,
+                shuffle: q.shuffle(),
+                repeat: q.repeat(),
+                buffered: Duration::ZERO,
+                sample_rate: st.sample_rate,
+                device: st.device.clone(),
+                loading: true,
+            };
+        }
         // Prefer what the engine says is audible; the queue cursor can briefly lead it.
         let current = st
             .token
@@ -202,6 +240,7 @@ fn snapshot(engine: &EngineHandle, queue: &RwLock<Queue>) -> PlayerSnapshot {
             buffered: st.buffered,
             sample_rate: st.sample_rate,
             device: st.device.clone(),
+            loading: false,
         }
     }
 }
@@ -215,19 +254,37 @@ impl Drop for Player {
     }
 }
 
+/// The entry being opened to play (the engine still has whatever played before).
+#[derive(Clone, Copy)]
+struct Loading {
+    ticket: u64,
+    id: EntryId,
+    /// Start it paused (the caller asked for that, or the user paused while it opened).
+    paused: bool,
+}
+
 struct Controller {
     engine: Arc<EngineHandle>,
     queue: Arc<RwLock<Queue>>,
-    resolvers: Resolvers,
     events: Sender<PlayerEvent>,
+    jobs: Sender<Job>,
+    /// Last ticket handed out; results carrying an older one are stale.
+    ticket: u64,
+    loading: Option<Loading>,
+    /// Shared with snapshots, so frontends show the entry being opened right away.
+    shown_loading: Arc<RwLock<Option<EntryId>>>,
+    /// The gapless follow-up being opened.
+    preloading: Option<(u64, EntryId)>,
     /// Entry currently handed to the engine as the gapless follow-up.
     preloaded: Option<EntryId>,
     /// Whether we intend to be playing something (false after Stop / end of queue).
     active: bool,
+    /// Songs that failed to open since the last one that played or the last user command.
+    failures: u32,
 }
 
 impl Controller {
-    fn run(&mut self, rx: Receiver<PlayerCommand>, stop: Receiver<()>) {
+    fn run(&mut self, rx: Receiver<PlayerCommand>, stop: Receiver<()>, opened: Receiver<Opened>) {
         let engine_events = self.engine.events().clone();
         loop {
             select! {
@@ -240,6 +297,10 @@ impl Controller {
                     Ok(ev) => self.engine_event(ev),
                     Err(_) => return,
                 },
+                recv(opened) -> o => match o {
+                    Ok(o) => self.opened(o),
+                    Err(_) => return,
+                },
             }
         }
     }
@@ -250,6 +311,8 @@ impl Controller {
 
     fn command(&mut self, cmd: PlayerCommand) {
         use PlayerCommand::*;
+        // Whatever the user does next gets the full benefit of the doubt again.
+        self.failures = 0;
         match cmd {
             Enqueue(tracks) => {
                 self.queue.write().extend(tracks);
@@ -304,7 +367,7 @@ impl Controller {
                 }
                 if removed_current && self.active {
                     // Keep the user's play/pause state across the jump.
-                    let paused = self.engine.status().state == PlaybackState::Paused;
+                    let paused = self.paused();
                     self.load_current_with(paused);
                 } else if removed_current {
                     self.stop();
@@ -319,21 +382,27 @@ impl Controller {
             Next => {
                 let has_next = self.queue.write().skip_next().is_some();
                 if has_next {
-                    self.load_current()
+                    let paused = self.loading.is_some_and(|l| l.paused);
+                    self.load_current_with(paused)
                 } else {
                     self.stop()
                 }
             }
             Prev => {
                 let st = self.engine.status();
-                if st.token.is_some() && st.position > RESTART_THRESHOLD {
+                // While a song opens, the engine's position belongs to the one before it.
+                if self.loading.is_none() && st.token.is_some() && st.position > RESTART_THRESHOLD {
                     self.engine.send(Command::Seek(Duration::ZERO));
                 } else if self.queue.write().skip_prev().is_some() {
-                    self.load_current();
+                    let paused = self.loading.is_some_and(|l| l.paused);
+                    self.load_current_with(paused);
                 }
             }
             Play => {
-                if self.engine.status().state == PlaybackState::Stopped {
+                if let Some(l) = &mut self.loading {
+                    l.paused = false;
+                    self.engine.send(Command::Play);
+                } else if self.engine.status().state == PlaybackState::Stopped {
                     let has = {
                         let mut q = self.queue.write();
                         q.current().is_some() || q.skip_next().is_some()
@@ -345,15 +414,30 @@ impl Controller {
                     self.engine.send(Command::Play);
                 }
             }
-            Pause => self.engine.send(Command::Pause),
+            Pause => {
+                if let Some(l) = &mut self.loading {
+                    l.paused = true;
+                }
+                self.engine.send(Command::Pause);
+            }
             TogglePause => {
-                if self.engine.status().state == PlaybackState::Stopped {
+                if let Some(l) = &mut self.loading {
+                    l.paused = !l.paused;
+                    let cmd = if l.paused {
+                        Command::Pause
+                    } else {
+                        Command::Play
+                    };
+                    self.engine.send(cmd);
+                } else if self.engine.status().state == PlaybackState::Stopped {
                     self.command(Play);
                 } else {
                     self.engine.send(Command::TogglePause);
                 }
             }
             Stop => self.stop(),
+            // Seeking would move the song that's being replaced.
+            Seek(_) | SeekBy(_) if self.loading.is_some() => {}
             Seek(to) => self.engine.send(Command::Seek(to)),
             SeekBy(ms) => {
                 let st = self.engine.status();
@@ -396,8 +480,18 @@ impl Controller {
         }
     }
 
+    /// Whether the user has things paused (counting a song that's still opening).
+    fn paused(&self) -> bool {
+        match self.loading {
+            Some(l) => l.paused,
+            None => self.engine.status().state == PlaybackState::Paused,
+        }
+    }
+
     fn engine_event(&mut self, ev: EngineEvent) {
         match ev {
+            // A preload that slipped through before the switch: the song being opened wins.
+            EngineEvent::TrackStarted { .. } if self.loading.is_some() => {}
             EngineEvent::TrackStarted { token, .. } => {
                 let id = EntryId(token);
                 if self.preloaded == Some(id) {
@@ -415,16 +509,34 @@ impl Controller {
             }
             EngineEvent::AboutToFinish { .. } => self.refresh_preload(),
             EngineEvent::TrackFinished { .. } => {}
+            EngineEvent::StateChanged(PlaybackState::Stopped) if self.loading.is_some() => {
+                // The old song ran out while the next one opens; it takes over when ready.
+                self.emit(PlayerEvent::StateChanged(PlaybackState::Stopped));
+            }
             EngineEvent::StateChanged(state) => {
                 if state == PlaybackState::Stopped {
+                    let was_active = self.active;
                     self.active = false;
                     self.preloaded = None;
-                    // Played off the end of the queue: park the cursor after the last entry.
-                    let mut q = self.queue.write();
-                    if q.peek_next().is_none() && q.current().is_some() {
-                        q.advance();
+                    self.preloading = None;
+                    let carry_on = {
+                        let mut q = self.queue.write();
+                        if q.peek_next().is_some() {
+                            // Ran out before the follow-up was ready (slow to open, or it
+                            // failed): carry on with it the normal way.
+                            was_active && q.skip_next().is_some()
+                        } else {
+                            // Played off the end: park the cursor after the last entry.
+                            if q.current().is_some() {
+                                q.advance();
+                            }
+                            false
+                        }
+                    };
+                    if carry_on {
+                        self.load_current();
+                        return;
                     }
-                    drop(q);
                     self.emit(PlayerEvent::TrackChanged(None));
                 }
                 self.emit(PlayerEvent::StateChanged(state));
@@ -443,69 +555,143 @@ impl Controller {
         }
     }
 
+    fn next_ticket(&mut self) -> u64 {
+        self.ticket += 1;
+        self.ticket
+    }
+
+    fn set_loading(&mut self, loading: Option<Loading>) {
+        self.loading = loading;
+        *self.shown_loading.write() = loading.map(|l| l.id);
+    }
+
     fn stop(&mut self) {
         self.active = false;
         self.preloaded = None;
+        self.preloading = None;
+        self.set_loading(None);
         self.engine.send(Command::Stop);
     }
 
-    /// Starts the queue's current entry, skipping entries that fail to open.
+    /// Starts opening the queue's current entry; it plays once it's open (see `opened`).
     fn load_current(&mut self) {
         self.load_current_with(false);
     }
 
     fn load_current_with(&mut self, paused: bool) {
-        let attempts = self.queue.read().len();
-        for _ in 0..attempts.max(1) {
-            let Some(entry) = self.queue.read().current().cloned() else {
-                self.stop();
-                return;
-            };
-            match self.resolvers.open(&entry.track) {
-                Ok(source) => {
-                    self.preloaded = None;
-                    self.active = true;
-                    self.engine.load(entry.id.0, source, paused);
+        let Some(entry) = self.queue.read().current().cloned() else {
+            self.stop();
+            return;
+        };
+        // The engine must not slide into the old follow-up while this one opens.
+        if self.preloaded.take().is_some() {
+            self.engine.send(Command::ClearPreload);
+        }
+        self.preloading = None;
+        self.active = true;
+        let ticket = self.next_ticket();
+        self.set_loading(Some(Loading {
+            ticket,
+            id: entry.id,
+            paused,
+        }));
+        let _ = self.jobs.send(Job {
+            ticket,
+            id: entry.id,
+            track: entry.track,
+            purpose: Purpose::Play,
+        });
+    }
+
+    fn opened(&mut self, o: Opened) {
+        match o.purpose {
+            Purpose::Play => {
+                let Some(l) = self.loading.filter(|l| l.ticket == o.ticket) else {
+                    return; // overtaken by a newer pick
+                };
+                self.set_loading(None);
+                match o.result {
+                    Ok(source) => {
+                        self.failures = 0;
+                        self.engine.load(l.id.0, source, l.paused);
+                    }
+                    Err(e) => self.failed(l, &e),
+                }
+            }
+            Purpose::Preload => {
+                if self.preloading != Some((o.ticket, o.id)) {
                     return;
                 }
-                Err(e) => {
-                    self.emit(PlayerEvent::Error(format!("{}: {e}", entry.track.title)));
-                    if self.queue.write().skip_next().is_none() {
-                        self.stop();
-                        return;
-                    }
+                self.preloading = None;
+                // A failed follow-up is retried (and reported) when its turn comes.
+                if let Ok(source) = o.result
+                    && self.active
+                    && self.loading.is_none()
+                {
+                    self.preloaded = Some(o.id);
+                    self.engine.preload(o.id.0, source);
                 }
             }
         }
-        self.stop();
+    }
+
+    /// A song wouldn't open: report it and move on, but don't run through the whole queue
+    /// when nothing will play (Spotify down, signed out).
+    fn failed(&mut self, l: Loading, e: &SourceError) {
+        let title = self
+            .queue
+            .read()
+            .get(l.id)
+            .map_or_else(|| "A song".to_owned(), |e| e.track.title.clone());
+        self.failures += 1;
+        if self.failures >= MAX_FAILURES_IN_ROW {
+            self.emit(PlayerEvent::Error(format!(
+                "{title}: {e} (stopped: {} songs in a row wouldn't play)",
+                self.failures
+            )));
+            self.failures = 0;
+            self.stop();
+            return;
+        }
+        self.emit(PlayerEvent::Error(format!("{title}: {e}")));
+        let has_next = {
+            let mut q = self.queue.write();
+            q.current_id() == Some(l.id) && q.skip_next().is_some()
+        };
+        if has_next {
+            self.load_current_with(l.paused);
+        } else {
+            self.stop();
+        }
     }
 
     /// Makes sure the engine's gapless follow-up matches what the queue says comes next.
     fn refresh_preload(&mut self) {
-        if !self.active {
+        if !self.active || self.loading.is_some() {
             return;
         }
         let next = self.queue.read().peek_next().cloned();
         let Some(next) = next else {
+            self.preloading = None;
             if self.preloaded.take().is_some() {
                 self.engine.send(Command::ClearPreload);
             }
             return;
         };
-        if self.preloaded == Some(next.id) {
+        if self.preloaded == Some(next.id) || self.preloading.is_some_and(|p| p.1 == next.id) {
             return;
         }
-        // Repeat-one: the "next" entry is the current one; preload a fresh decoder of it.
-        match self.resolvers.open(&next.track) {
-            Ok(source) => {
-                self.preloaded = Some(next.id);
-                self.engine.preload(next.id.0, source);
-            }
-            Err(e) => {
-                self.preloaded = None;
-                self.engine.send(Command::ClearPreload);
-                self.emit(PlayerEvent::Error(format!("{}: {e}", next.track.title)));
-            }
+        if self.preloaded.take().is_some() {
+            self.engine.send(Command::ClearPreload);
         }
+        // Repeat-one: the "next" entry is the current one; this opens a fresh decoder of it.
+        let ticket = self.next_ticket();
+        self.preloading = Some((ticket, next.id));
+        let _ = self.jobs.send(Job {
+            ticket,
+            id: next.id,
+            track: next.track,
+            purpose: Purpose::Preload,
+        });
     }
 }

@@ -29,6 +29,15 @@ pub enum SourceError {
     Decode(String),
     #[error("seek failed: {0}")]
     Seek(String),
+    /// Briefly out of reach (network trouble, a throttled service); worth retrying soon.
+    #[error("temporarily unavailable: {0}")]
+    Unavailable(String),
+}
+
+impl SourceError {
+    pub fn is_temporary(&self) -> bool {
+        matches!(self, Self::Unavailable(_))
+    }
 }
 
 pub trait AudioSource: Send {

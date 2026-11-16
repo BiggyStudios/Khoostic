@@ -42,7 +42,7 @@ impl PlayClock {
                 return;
             }
         }
-        if snap.state == PlaybackState::Playing {
+        if snap.state == PlaybackState::Playing && !snap.loading {
             self.pos += dt as f64;
             let err = actual - self.pos;
             if err.abs() > 0.4 {
@@ -694,6 +694,7 @@ mod tests {
             buffered: Duration::ZERO,
             sample_rate: 48_000,
             device: String::new(),
+            loading: false,
         }
     }
 
