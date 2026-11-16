@@ -372,6 +372,13 @@ font_size = 15 # big
     }
 
     #[test]
+    fn lists_save_too() {
+        let order: toml_edit::Array = ["lrclib", "local"].into_iter().collect();
+        let c = Config::parse(&set_value("", "lyrics.providers", order.into()).unwrap()).unwrap();
+        assert_eq!(c.lyrics.providers, ["lrclib", "local"]);
+    }
+
+    #[test]
     fn empty_file_is_default() {
         assert_eq!(Config::parse("").unwrap(), Config::default());
     }

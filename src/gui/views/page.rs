@@ -295,7 +295,7 @@ impl Gui {
                         15.0,
                         15.0,
                     ),
-                    spotify_green(),
+                    t.accent,
                 );
             }
             if let Some(d) = tr.duration {

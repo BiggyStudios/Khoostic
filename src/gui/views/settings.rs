@@ -4,7 +4,9 @@
 use crate::config::Config;
 use crate::gui::app::{Gui, count};
 use crate::gui::render::{Rect, Weight};
+use crate::gui::ui::icons::Icon;
 use crate::gui::ui::{Ui, anim};
+use crate::lyrics::Provider;
 use crate::player::{Player, PlayerSnapshot};
 use crate::spotify::Status;
 
@@ -180,6 +182,88 @@ impl Gui {
         }
         y += 66.0;
 
+        // Lyrics sources: on/off each, and the order they're tried in (the arrows).
+        section(ui, &mut y, "LYRICS");
+        let enabled = self.lyrics.providers();
+        let mut rows: Vec<(Provider, bool)> = enabled.iter().map(|&p| (p, true)).collect();
+        rows.extend(
+            Provider::ALL
+                .iter()
+                .filter(|p| !enabled.contains(p))
+                .map(|&p| (p, false)),
+        );
+        let mut change: Option<Vec<Provider>> = None;
+        for (i, &(p, on)) in rows.iter().enumerate() {
+            let (title, hint) = match p {
+                Provider::Local => (
+                    "Your files",
+                    ".lrc files next to your songs, or lyrics saved in their tags",
+                ),
+                Provider::Spotify => (
+                    "Spotify",
+                    "Spotify's synced lyrics, also for your own songs it can match",
+                ),
+                Provider::Lrclib => (
+                    "LRCLIB",
+                    "lrclib.net, a free public lyrics library (sent the song's title and artist)",
+                ),
+            };
+            let title = if on {
+                format!("{}. {title}", i + 1)
+            } else {
+                title.to_string()
+            };
+            row_text(ui, y, &title, hint);
+            if on {
+                let cy = y + 20.0;
+                let up = i > 0;
+                let down = i + 1 < enabled.len();
+                let arrows = [(Icon::Up, up, 14.0), (Icon::Down, down, 46.0)];
+                for (icon, active, dx) in arrows {
+                    let color = if active { t.dim } else { t.dim.alpha(0.3) };
+                    let hover = if active { t.fg } else { color };
+                    let id = anim::id(("set-lyrics-move", p.key(), dx as i32));
+                    if ui.icon_button(id, icon, (control_x + dx, cy), 18.0, color, hover) && active
+                    {
+                        let mut list = enabled.clone();
+                        let j = if icon == Icon::Up { i - 1 } else { i + 1 };
+                        list.swap(i, j);
+                        change = Some(list);
+                    }
+                }
+            }
+            let id = anim::id(("set-lyrics", p.key()));
+            if let Some(s) =
+                ui.segmented(id, control_x + 76.0, y + 3.0, &["Off", "On"], on as usize)
+                && (s == 1) != on
+            {
+                let mut list = enabled.clone();
+                if on {
+                    list.retain(|&q| q != p);
+                } else {
+                    list.push(p);
+                }
+                change = Some(list);
+            }
+            y += 58.0;
+        }
+        if enabled.is_empty() {
+            ui.label(
+                "Lyrics are off: turn on at least one source",
+                control_x + 4.0,
+                Rect::new(control_x, y - 6.0, body.w, 18.0),
+                body.right() - control_x,
+                12.0,
+                Weight::Regular,
+                t.dim.alpha(0.8),
+            );
+            y += 24.0;
+        }
+        if let Some(list) = change {
+            self.set_lyrics_providers(list);
+        }
+        y += 8.0;
+
         if let Some(lf) = self.discovery.lastfm().cloned() {
             use crate::lastfm::Status as L;
             section(ui, &mut y, "LAST.FM");
@@ -341,6 +425,22 @@ impl Gui {
         if let Some(path) = self.config_path.clone()
             && let Err(e) = Config::save_value(&path, key, value)
         {
+            self.toast(format!("Couldn't save: {e:#}"));
+        }
+    }
+
+    /// Uses these lyrics sources from now on and saves them to the config.
+    fn set_lyrics_providers(&mut self, list: Vec<Provider>) {
+        self.lyrics.set_providers(list.clone());
+        // Look the playing song up again with the new sources.
+        self.sp.lyrics = None;
+        self.sp.lyrics_pending = None;
+        self.lyrics_layout = None;
+        let Some(path) = self.config_path.clone() else {
+            return self.toast("No config location; the change lasts until you quit");
+        };
+        let keys: toml_edit::Array = list.iter().map(|p| p.key()).collect();
+        if let Err(e) = Config::save_value(&path, "lyrics.providers", keys) {
             self.toast(format!("Couldn't save: {e:#}"));
         }
     }

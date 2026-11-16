@@ -28,6 +28,17 @@ pub enum Provider {
 }
 
 impl Provider {
+    pub const ALL: [Provider; 3] = [Provider::Local, Provider::Spotify, Provider::Lrclib];
+
+    /// The name in `lyrics.providers`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Spotify => "spotify",
+            Self::Lrclib => "lrclib",
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "local" | "file" | "files" => Some(Self::Local),
@@ -42,7 +53,7 @@ const LRCLIB: &str = "https://lrclib.net/api";
 const TIMEOUT: Duration = Duration::from_secs(12);
 
 pub struct LyricsService {
-    providers: Vec<Provider>,
+    providers: Mutex<Vec<Provider>>,
     spotify: Option<Arc<Spotify>>,
     http: Option<reqwest::blocking::Client>,
     cache: Mutex<HashMap<String, Option<Arc<Lyrics>>>>,
@@ -69,12 +80,23 @@ impl LyricsService {
             .build()
             .ok();
         let svc = Self {
-            providers,
+            providers: Mutex::new(providers),
             spotify,
             http,
             cache: Mutex::default(),
         };
         (Arc::new(svc), problems)
+    }
+
+    /// Where lyrics are looked for, in order.
+    pub fn providers(&self) -> Vec<Provider> {
+        self.providers.lock().clone()
+    }
+
+    /// Changes the providers (Settings). Forgets earlier answers, which may differ now.
+    pub fn set_providers(&self, providers: Vec<Provider>) {
+        *self.providers.lock() = providers;
+        self.cache.lock().clear();
     }
 
     /// Already looked up this session (`Some(None)` = there are none).
@@ -98,7 +120,8 @@ impl LyricsService {
     }
 
     fn find(&self, track: &Track) -> Option<Lyrics> {
-        for p in &self.providers {
+        let providers = self.providers.lock().clone();
+        for p in &providers {
             let result = match p {
                 Provider::Local => Ok(local(track)),
                 Provider::Spotify => self.via_spotify(track),
@@ -232,7 +255,9 @@ mod tests {
             providers: vec!["spotify".into(), "nope".into()],
         };
         let (svc, problems) = LyricsService::new(&cfg, None);
-        assert_eq!(svc.providers, [Provider::Spotify]);
+        assert_eq!(svc.providers(), [Provider::Spotify]);
+        svc.set_providers(vec![Provider::Lrclib, Provider::Local]);
+        assert_eq!(svc.providers(), [Provider::Lrclib, Provider::Local]);
         assert_eq!(problems.len(), 1);
     }
 

@@ -32,6 +32,7 @@ pub enum Icon {
     Forward,
     Home,
     Up,
+    Down,
     Spotify,
     /// Song radio: a signal radiating from a point.
     Radio,
@@ -254,6 +255,7 @@ pub fn draw(c: &mut Canvas, icon: Icon, r: Rect, color: Color) {
             p.line((13.5, 14.5), (13.5, 19.0));
         }
         Icon::Up => p.poly(&[(5.5, 14.5), (12.0, 8.0), (18.5, 14.5)]),
+        Icon::Down => p.poly(&[(5.5, 9.5), (12.0, 16.0), (18.5, 9.5)]),
         Icon::Radio => {
             p.dot(12.0, 12.0, 2.2);
             p.arc(12.0, 12.0, 5.5, -FRAC_PI_4, FRAC_PI_4);

@@ -156,14 +156,15 @@ impl Gui {
                 } else {
                     Icon::Heart
                 };
-                let green = crate::gui::views::spotify_green();
+                // The theme's accent, like everything else that is "on".
+                let liked_color = t.accent;
                 if ui.icon_button(
                     lid,
                     icon,
                     (lx, r.y + 47.0),
                     17.0,
-                    t.dim.lerp(green, lo),
-                    t.fg.lerp(green, lo),
+                    t.dim.lerp(liked_color, lo),
+                    t.fg.lerp(liked_color, lo),
                 ) {
                     self.set_liked(&track, !liked);
                 }

@@ -110,6 +110,14 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
 
+    // Like the playing song (the heart in the player bar fills in).
+    if let Some(t) = library
+        .all_tracks(khoostic::library::TrackOrder::Title)
+        .into_iter()
+        .find(|t| t.title.starts_with("Tsunami"))
+    {
+        library.set_liked(&t, true)?;
+    }
     shot(&mut h, "lyrics", &keys(&[Key::Char('L')]))?;
     h.frame(&keys(&[Key::Char('L')]), &player)?;
     // Collapse Your Library to covers, and open it again.
@@ -172,6 +180,15 @@ fn main() -> anyhow::Result<()> {
     h.frame(&keys(&[Key::Escape]), &player)?;
     shot(&mut h, "sp-playlists", &click(100.0, 258.0, false))?;
     shot(&mut h, "settings", &click(1116.0, 32.0, false))?;
+    shot(
+        &mut h,
+        "settings-lyrics",
+        &Input {
+            mouse: Some((700.0, 400.0)),
+            scroll: 600.0,
+            ..Default::default()
+        },
+    )?;
     shot(&mut h, "visualizer", &keys(&[Key::Char('6')]))?;
     h.frame(&keys(&[Key::Char('1')]), &player)?;
     h.frame(&keys(&[Key::Char('4')]), &player)?;
