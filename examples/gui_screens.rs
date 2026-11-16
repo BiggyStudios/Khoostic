@@ -206,6 +206,9 @@ fn main() -> anyhow::Result<()> {
     mid(&mut h, "viz3d-2-rising", &Input::default(), 900)?;
     mid(&mut h, "viz3d-3-storm", &Input::default(), 2500)?;
     mid(&mut h, "viz3d-4-storm", &Input::default(), 3000)?;
+    for k in 0..4 {
+        mid(&mut h, &format!("viz3d-storm-{k}"), &Input::default(), 1700)?;
+    }
     mid(&mut h, "viz3d-5-back", &click(800.0, 109.0, false), 900)?;
     mid(&mut h, "viz3d-6-flat", &Input::default(), 1600)?;
     h.frame(&keys(&[Key::Char('1')]), &player)?;

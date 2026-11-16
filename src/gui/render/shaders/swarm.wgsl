@@ -18,6 +18,10 @@ const WALL_ROWS: u32 = 32u;
 const WALL_COLS: u32 = 32u;
 /// Each bar is two cubes wide and this many high.
 const BAR_ROWS: u32 = 216u;
+/// No cube gets closer to the camera than this (world units)...
+const NEAR: f32 = 1.9;
+/// ...and they start getting pushed back here.
+const CLEAR: f32 = 2.8;
 
 struct Scene {
     view_proj: mat4x4<f32>,
@@ -242,7 +246,23 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     v += dir * (bass * bass * select(1.6, 3.0, spark) + beat * select(5.0, 9.0, spark)) * dt;
     // Treble shimmers.
     v += (hash3(i ^ u32(t * 60.0)) - 0.5) * treble * 4.0 * dt;
+    // Keep clear of the camera: pushed back well before they get close, and never closer
+    // than NEAR, so nothing flies into your face.
+    let from_cam = p - u.cam.xyz;
+    let cam_dist = max(length(from_cam), 1e-4);
+    let away = from_cam / cam_dist;
+    if cam_dist < CLEAR {
+        let k = (CLEAR - cam_dist) / (CLEAR - NEAR);
+        v += away * k * k * 30.0 * dt;
+        // Don't keep heading at the camera.
+        v -= away * min(dot(v, away), 0.0) * min(k * 4.0 * dt * 60.0, 1.0);
+    }
     p += v * dt;
+    let now_dist = length(p - u.cam.xyz);
+    if now_dist < NEAR {
+        p = u.cam.xyz + normalize(p - u.cam.xyz + away * 1e-3) * NEAR;
+        v -= away * min(dot(v, away), 0.0);
+    }
 
     // Sparks that fly too far come back out of the heart.
     if spark && dist > 2.8 {
@@ -314,7 +334,10 @@ fn vs_cube(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> V
         lp = rotate(local, spin_axis, seed.x * 0.5);
         ln = rotate(n, spin_axis, seed.x * 0.5);
     }
-    let world = c.pos.xyz + lp * c.pos.w;
+    // A backstop: anything that still ends up near the camera shrinks away.
+    let near = smoothstep(NEAR * 0.75, NEAR + 0.2, length(c.pos.xyz - u.cam.xyz));
+    let size = select(c.pos.w * near, c.pos.w, wall_cube || age < 0.0);
+    let world = c.pos.xyz + lp * size;
 
     var out: VsOut;
     out.clip = u.view_proj * vec4<f32>(world, 1.0);
