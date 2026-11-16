@@ -26,6 +26,12 @@ pub struct SwarmFrame {
     pub time: f32,
     /// Music time: runs faster when the music is loud; moves the wave along its path.
     pub tau: f32,
+    /// True on the frame a beat lands (one burst per beat, however fast frames come).
+    pub kick: bool,
+    /// How recently a beat landed: 1 then, fading over about half a second.
+    pub impact: f32,
+    /// Sudden rises in the bass (0..1).
+    pub punch: f32,
     pub dt: f32,
     pub mode: Mode,
     /// Seconds since `mode` started.
@@ -307,7 +313,7 @@ impl Swarm {
             surface: lin(f.surface),
             fg: lin(f.fg),
             bands,
-            motion: [f.tau, 0.0, 0.0, 0.0],
+            motion: [f.tau, f.kick as u8 as f32, f.impact, f.punch],
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         self.pending = true;
@@ -368,13 +374,14 @@ fn camera(f: &SwarmFrame) -> ([f32; 3], [f32; 3], f32) {
     let d = smooth(f.depth);
     let t = f.time;
     let swing = 0.2 * (t * 0.07).sin() + 0.06 * (t * 0.19).sin();
-    let dist = 4.3 - 0.25 * f.bass - 0.1 * f.beat;
+    // Each hit punches the camera in a little.
+    let dist = 4.3 - 0.25 * f.bass - 0.45 * f.impact * f.impact;
     let deep = [
         swing.sin() * dist,
         0.35 + 0.18 * (t * 0.13).sin(),
         swing.cos() * dist,
     ];
-    let shake = 0.012 * f.beat;
+    let shake = 0.05 * f.impact * f.impact;
     let eye = [
         lerp(0.0, deep[0] + shake * (t * 47.0).sin(), d),
         lerp(0.0, deep[1] + shake * (t * 53.0).cos(), d),
@@ -462,6 +469,9 @@ mod tests {
             bars: [0.0, 0.0, 1200.0, 600.0],
             time: 3.0,
             tau: 3.0,
+            kick: false,
+            impact: 0.0,
+            punch: 0.0,
             dt: 0.016,
             mode: Mode::Bars,
             phase: 0.0,

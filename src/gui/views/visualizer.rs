@@ -22,6 +22,11 @@ pub(crate) struct Viz3d {
     time: f32,
     /// Music time: speeds up with the bass and mids, so the wave swings harder to loud music.
     tau: f32,
+    /// Beats seen so far (a new one is a hit), the hit envelope, and a slow bass average to
+    /// tell sudden bass from loud bass.
+    beats: u64,
+    impact: f32,
+    slow_bass: f32,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -73,7 +78,19 @@ impl Gui {
         }
         if let Some((mode, phase, depth, walls, opacity)) = scene {
             self.viz3d.time += dt;
-            self.viz3d.tau += dt * (0.5 + 0.9 * a.bass + 0.5 * a.mid);
+            let v = &mut self.viz3d;
+            let kick = a.beat_count != v.beats;
+            v.beats = a.beat_count;
+            v.impact = if kick {
+                1.0
+            } else {
+                v.impact * (-dt * 6.0).exp()
+            };
+            v.slow_bass += (a.bass - v.slow_bass) * (1.0 - (-dt * 2.5).exp());
+            let punch = ((a.bass - v.slow_bass) * 3.0).clamp(0.0, 1.0);
+            // The wave swings faster with the music and lunges on every hit.
+            v.tau += dt * (0.5 + 0.9 * a.bass + 0.5 * a.mid + 3.5 * v.impact * v.impact);
+            let impact = v.impact;
             ui.anim.keep_alive();
             // Edge to edge across the page panel; the bars keep their place inside it.
             let view = Rect::new(r.x - PAD, r.y - PAD + 4.0, r.w + 2.0 * PAD, r.h + PAD + 4.0);
@@ -83,6 +100,9 @@ impl Gui {
                 bars: [r.x - view.x, r.y - view.y, r.w, r.h],
                 time: self.viz3d.time,
                 tau: self.viz3d.tau,
+                kick,
+                impact,
+                punch,
                 dt,
                 mode,
                 phase,

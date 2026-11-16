@@ -39,7 +39,8 @@ struct Scene {
     surface: vec4<f32>,
     fg: vec4<f32>,
     bands: array<vec4<f32>, 16>,
-    // x: music time (runs faster when the music is loud); drives the wave
+    // x: music time (runs faster when the music is loud), drives the wave; y: 1 on the frame a
+    // beat lands; z: how recently one landed (1, fading); w: bass punch (sudden rises)
     motion: vec4<f32>,
 };
 
@@ -260,14 +261,27 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     let puff = (1.0 + bass * 0.5 + beat * 0.4) * select(1.0, 1.8, spark);
     let target_pos = here + (wide * across + thin * through) * puff;
 
-    // Pulled along to its place in the wave (the splashes loosely).
-    v += (target_pos - p) * select(10.0, 4.5, spark) * dt;
-    v *= 1.0 - min(dt * select(4.5, 2.2, spark), 1.0);
+    let kick = u.motion.y;
+    let impact = u.motion.z;
+    let punch = u.motion.w;
+    // Out from the wave's spine, for blasts.
+    let blast = safe_normalize(flatten(p - here, tangent) + (seed - 0.5) * 0.3);
+    // Pulled along to its place in the wave (the splashes loosely). Right after a hit the hold
+    // goes slack, so the blast carries before the wave reels it back in.
+    let slack = 1.0 - 0.6 * impact;
+    v += (target_pos - p) * select(10.0, 4.5, spark) * slack * dt;
+    v *= 1.0 - min(dt * select(4.5, 2.2, spark) * (1.0 - 0.6 * impact), 1.0);
+    // A beat hits: every cube gets a burst of speed at once, out from the spine and forward
+    // along the wave, harder the louder the bass and this cube's band.
+    if kick > 0.5 {
+        let force = (0.6 + 1.2 * seed.y) * (0.6 + bass + 0.6 * mine) * select(1.0, 1.6, spark);
+        v += blast * force + tangent * (1.2 + bass * 1.5);
+    }
+    // Sudden bass (not just loud bass) keeps blowing the ribbon outward.
+    v += blast * punch * select(6.0, 10.0, spark) * dt;
     // Sand blowing about in the wave; harder when this cube's band is loud.
     let flow = curl(p * 0.9 + seed * 0.2, t * (0.6 + mid * 0.8));
     v += flow * (0.06 + 0.3 * mine + 0.15 * treble) * select(3.0, 5.0, spark) * dt;
-    // Beats shove the wave forward along itself.
-    v += tangent * beat * select(2.5, 4.0, spark) * dt;
     p += v * dt;
     // A safety net only: never closer to the camera than NEAR.
     let from_cam = p - u.cam.xyz;
@@ -357,7 +371,7 @@ fn vs_cube(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> V
     let bar_color = spectrum(row);
     let storm = select(spectrum(seed.x * 0.38), spectrum(0.78 + seed.x * 0.22), spark);
     out.color = mix(bar_color, storm, loose);
-    out.glow = mix(0.9, 0.02 + mine * mine * mine * select(0.45, 0.7, spark), loose);
+    out.glow = mix(0.9, 0.02 + mine * mine * mine * select(0.45, 0.7, spark) + u.motion.z * 0.25, loose);
     out.metal = 1.0;
     if wall_cube {
         let level = band(((i - SWARM) % (WALL_ROWS * WALL_COLS)) / WALL_COLS * 2u);
@@ -426,6 +440,6 @@ fn fs_bg(in: BgOut) -> @location(0) vec4<f32> {
     // The panel color, darkening at the edges as the room opens up, with a glow behind the
     // storm that breathes with the bass.
     let vignette = mix(1.0, (1.0 - smoothstep(0.2, 1.1, d) * 0.6) * 0.6, into_3d);
-    let glow = spectrum(0.35) * exp(-d * d * 4.0) * (0.015 + 0.05 * u.audio.x + 0.05 * u.audio.w) * (0.4 + 0.6 * into_3d);
+    let glow = spectrum(0.35) * exp(-d * d * 4.0) * (0.015 + 0.05 * u.audio.x + 0.12 * u.motion.z) * (0.4 + 0.6 * into_3d);
     return vec4<f32>(u.surface.rgb * vignette + glow, 1.0);
 }

@@ -211,6 +211,10 @@ fn main() -> anyhow::Result<()> {
     for k in 0..4 {
         mid(&mut h, &format!("viz3d-storm-{k}"), &Input::default(), 1700)?;
     }
+    // A quick burst, to see beats hit.
+    for k in 0..8 {
+        mid(&mut h, &format!("viz3d-burst-{k}"), &Input::default(), 150)?;
+    }
     mid(&mut h, "viz3d-5-back", &click(800.0, 109.0, false), 900)?;
     mid(&mut h, "viz3d-6-flat", &Input::default(), 1600)?;
     h.frame(&keys(&[Key::Char('1')]), &player)?;
