@@ -20,6 +20,8 @@ pub(crate) struct Viz3d {
     stage: Stage,
     /// Seconds the storm has run; drives its flow and the camera drift.
     time: f32,
+    /// Music time: speeds up with the bass and mids, so the wave swings harder to loud music.
+    tau: f32,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -71,6 +73,7 @@ impl Gui {
         }
         if let Some((mode, phase, depth, walls, opacity)) = scene {
             self.viz3d.time += dt;
+            self.viz3d.tau += dt * (0.5 + 0.9 * a.bass + 0.5 * a.mid);
             ui.anim.keep_alive();
             // Edge to edge across the page panel; the bars keep their place inside it.
             let view = Rect::new(r.x - PAD, r.y - PAD + 4.0, r.w + 2.0 * PAD, r.h + PAD + 4.0);
@@ -79,6 +82,7 @@ impl Gui {
                 logical: (0.0, 0.0),
                 bars: [r.x - view.x, r.y - view.y, r.w, r.h],
                 time: self.viz3d.time,
+                tau: self.viz3d.tau,
                 dt,
                 mode,
                 phase,

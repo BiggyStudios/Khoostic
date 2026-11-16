@@ -24,6 +24,8 @@ pub struct SwarmFrame {
     pub bars: [f32; 4],
     /// Seconds the storm has been running (drives the flow and the camera).
     pub time: f32,
+    /// Music time: runs faster when the music is loud; moves the wave along its path.
+    pub tau: f32,
     pub dt: f32,
     pub mode: Mode,
     /// Seconds since `mode` started.
@@ -67,6 +69,7 @@ struct Uniforms {
     surface: [f32; 4],
     fg: [f32; 4],
     bands: [[f32; 4]; 16],
+    motion: [f32; 4],
 }
 
 struct Targets {
@@ -304,6 +307,7 @@ impl Swarm {
             surface: lin(f.surface),
             fg: lin(f.fg),
             bands,
+            motion: [f.tau, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         self.pending = true;
@@ -363,7 +367,7 @@ fn camera(f: &SwarmFrame) -> ([f32; 3], [f32; 3], f32) {
     let flat_fov = 2.0 * (1.0 / flat_dist).atan();
     let d = smooth(f.depth);
     let t = f.time;
-    let swing = 0.42 * (t * 0.07).sin() + 0.12 * (t * 0.19).sin();
+    let swing = 0.2 * (t * 0.07).sin() + 0.06 * (t * 0.19).sin();
     let dist = 4.3 - 0.25 * f.bass - 0.1 * f.beat;
     let deep = [
         swing.sin() * dist,
@@ -457,6 +461,7 @@ mod tests {
             logical: (1200.0, 600.0),
             bars: [0.0, 0.0, 1200.0, 600.0],
             time: 3.0,
+            tau: 3.0,
             dt: 0.016,
             mode: Mode::Bars,
             phase: 0.0,

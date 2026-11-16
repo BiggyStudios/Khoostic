@@ -191,6 +191,8 @@ fn main() -> anyhow::Result<()> {
     shot(&mut h, "theme-catppuccin", &Input::default())?;
     shot(&mut h, "lyrics-catppuccin", &keys(&[Key::Char('L')]))?;
     h.frame(&keys(&[Key::Char('L')]), &player)?;
+    // Back to the default theme for the rest.
+    mid(&mut h, "theme-khoostic", &click(428.0, 260.0, false), 1200)?;
     shot(
         &mut h,
         "settings-lyrics",

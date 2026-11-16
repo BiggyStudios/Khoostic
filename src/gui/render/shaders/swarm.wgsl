@@ -39,6 +39,8 @@ struct Scene {
     surface: vec4<f32>,
     fg: vec4<f32>,
     bands: array<vec4<f32>, 16>,
+    // x: music time (runs faster when the music is loud); drives the wave
+    motion: vec4<f32>,
 };
 
 struct Cube {
@@ -145,9 +147,14 @@ fn safe_normalize(v: vec3<f32>) -> vec3<f32> {
     return select(vec3<f32>(1.0, 0.0, 0.0), v / l, l > 1e-5);
 }
 
-// The storm's heart drifts around a little.
-fn heart(t: f32) -> vec3<f32> {
-    return vec3<f32>(sin(t * 0.21) * 0.35, sin(t * 0.17 + 1.0) * 0.18, cos(t * 0.13) * 0.25);
+// Where the wave's lead point is at (music) time `tau`: a loop of swings that never quite
+// repeats, kept in front of the camera.
+fn path(tau: f32) -> vec3<f32> {
+    return vec3<f32>(
+        sin(tau * 0.6) * 0.95 + sin(tau * 1.37) * 0.25,
+        sin(tau * 0.83 + 1.0) * 0.6 + cos(tau * 1.9) * 0.15,
+        cos(tau * 0.47) * 0.6,
+    );
 }
 
 fn wall(i: u32) -> vec4<f32> {
@@ -160,9 +167,9 @@ fn wall(i: u32) -> vec4<f32> {
     let level = band(row * 2u);
     let jitter = hash(i) * 0.05;
     let push = level * 0.35 * u.view.z;
-    let x = side * (2.05 + jitter + (1.0 - u.view.z) * 1.5 - push);
+    let x = side * (2.55 + jitter + (1.0 - u.view.z) * 1.5 - push);
     let y = -1.55 + f32(row) * 0.1;
-    let z = 1.6 - f32(col) * 0.19;
+    let z = 2.4 - f32(col) * 0.19;
     return vec4<f32>(x, y, z, 0.043 * u.view.z);
 }
 
@@ -221,68 +228,56 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let center = heart(t);
-    // The storm moves across the view, not at it: depth is measured along the line from the
-    // camera to the heart, and every push works mostly in the plane facing the camera.
-    let fwd = normalize(center - u.cam.xyz);
-
     var age = c.vel.w;
     if age < 0.0 {
-        // Just broke loose: a kick up and to the side, out of the bar.
+        // Just broke loose: a kick up and to the side, out of the bar (the wave then picks
+        // it up).
         age = 0.0;
         if c.pos.w <= 0.0 {
             // Not part of the bar right now: start from its top instead of thin air.
             p.y = min(p.y, bar_top(i));
         }
-        let out = flatten(seed - 0.5 + vec3<f32>(0.0, 0.7, 0.0), fwd);
-        v = safe_normalize(out) * (0.5 + seed.y * 1.2) + vec3<f32>(0.0, 0.4, 0.0);
+        let out = vec3<f32>(seed.x - 0.5, 0.4 + seed.y * 0.6, 0.0);
+        v = safe_normalize(out) * (0.5 + seed.y * 1.2);
     }
     age += dt;
 
-    let r = p - center;
-    let dist = max(length(r), 1e-4);
-    let dir = r / dist;
-    // Outward, as seen from the camera.
-    let side = safe_normalize(flatten(r, fwd) + (seed - 0.5) * 0.05);
-    let depth = dot(r, fwd);
-    let flow = curl(p * select(0.9, 0.7, spark) + seed * 0.2, t * (0.6 + mid * 0.8));
+    // The wave: a lead point swinging along a looping path; every cube follows the path some
+    // time behind it, spread around it in a tube that widens toward the tail. The splashes are
+    // a looser spray around the same wave. Nothing comes out of a single point.
+    let tau = u.motion.x;
+    let lag = seed.x * 3.4;
+    let here = path(tau - lag);
+    let tangent = safe_normalize(path(tau - lag + 0.05) - here);
+    let n1 = safe_normalize(cross(tangent, vec3<f32>(0.0, 1.0, 0.3)));
+    let n2 = cross(tangent, n1);
+    // A ribbon: wide one way, thin the other, twisting along its length.
+    let twist = lag * 1.3 + tau * 0.4;
+    let wide = n1 * cos(twist) + n2 * sin(twist);
+    let thin = cross(tangent, wide);
+    let across = (seed.y * 2.0 - 1.0) * (0.12 + 0.12 * lag);
+    let through = (seed.z * 2.0 - 1.0) * (0.02 + 0.03 * lag);
+    let puff = (1.0 + bass * 0.5 + beat * 0.4) * select(1.0, 1.8, spark);
+    let target_pos = here + (wide * across + thin * through) * puff;
 
-    // Carried by the flow, faster when this cube's band is loud.
-    let speed = select(0.7, 1.1, spark) * (0.4 + 1.1 * mine + 0.5 * mid);
-    v += (flow * speed - v) * min(dt * select(1.6, 0.6, spark), 1.0);
-    // A vortex facing the camera, tilted a little so it still has some depth.
-    let axis = normalize(fwd + vec3<f32>(0.0, 0.35, 0.0));
-    v += cross(axis, r) * (0.25 + mid * 1.2) * dt;
-    // Held together loosely around the heart (sparks roam further).
-    let radius = select(0.55, 1.5, spark) * (1.0 + bass * 0.5);
-    v -= dir * max(dist - radius, 0.0) * select(7.0, 1.2, spark) * dt;
-    // The sand also leans gently into the heart, so it stays a dense cloud.
-    v -= r * select(0.7, 0.0, spark) * dt;
-    // A shallow layer: depth springs back to the heart's, and motion toward or away from the
-    // camera dies out quickly.
-    v -= fwd * depth * select(3.0, 1.5, spark) * dt;
-    v -= fwd * dot(v, fwd) * min(dt * 3.0, 1.0);
-    // Bass blows the storm apart and beats kick it, outward across the view.
-    v += side * (bass * bass * select(1.6, 3.0, spark) + beat * select(5.0, 9.0, spark)) * dt;
-    // Treble shimmers.
-    v += flatten(hash3(i ^ u32(t * 60.0)) - 0.5, fwd) * treble * 4.0 * dt;
-    // A safety net only (the forces above keep the storm away): never closer than NEAR.
+    // Pulled along to its place in the wave (the splashes loosely).
+    v += (target_pos - p) * select(10.0, 4.5, spark) * dt;
+    v *= 1.0 - min(dt * select(4.5, 2.2, spark), 1.0);
+    // Sand blowing about in the wave; harder when this cube's band is loud.
+    let flow = curl(p * 0.9 + seed * 0.2, t * (0.6 + mid * 0.8));
+    v += flow * (0.06 + 0.3 * mine + 0.15 * treble) * select(3.0, 5.0, spark) * dt;
+    // Beats shove the wave forward along itself.
+    v += tangent * beat * select(2.5, 4.0, spark) * dt;
     p += v * dt;
+    // A safety net only: never closer to the camera than NEAR.
     let from_cam = p - u.cam.xyz;
     if length(from_cam) < NEAR {
         let away = safe_normalize(from_cam);
         p = u.cam.xyz + away * NEAR;
         v -= away * min(dot(v, away), 0.0);
     }
-
-    // Sparks that fly too far come back out of the heart, heading off across the view.
-    if spark && dist > 2.8 {
-        let d = safe_normalize(flatten(hash3(i + u32(t * 1000.0)) - 0.5, fwd));
-        p = center + d * 0.2;
-        v = d * (1.2 + bass * 2.5 + seed.z);
-    }
     // Fine sand, with a few big chunks among the splashes.
-    let target_size = select(0.0035 + seed.z * 0.008, 0.007 + 0.03 * pow(seed.z, 5.0), spark);
+    let target_size = select(0.0035 + seed.z * 0.008, 0.006 + 0.026 * pow(seed.z, 9.0), spark);
     let size = mix(c.pos.w, target_size, min(dt * 2.5, 1.0));
     cubes[i].pos = vec4<f32>(p, size);
     cubes[i].vel = vec4<f32>(v, age);
@@ -404,7 +399,7 @@ fn fs_cube(in: VsOut) -> @location(0) vec4<f32> {
     var color = diffuse + reflection + spec + rim + in.color * in.glow;
     // Fog into the backdrop with distance (only once in 3D).
     let fog = 1.0 - exp(-max(dist - 2.0, 0.0) * u.view.w);
-    color = mix(color, u.surface.rgb * 0.3, clamp(fog, 0.0, 0.92));
+    color = mix(color, u.surface.rgb * 0.55, clamp(fog, 0.0, 0.95));
     return vec4<f32>(color, 1.0);
 }
 
