@@ -11,7 +11,6 @@ use crate::gui::ui::icons::{self, Icon};
 use crate::gui::ui::{Ui, anim, hsv};
 use crate::gui::views::page::{Card, SONG_H, SongAction, chips, section_title, wrap};
 use crate::gui::views::search::spin_angle;
-use crate::gui::views::spotify_green;
 use crate::library::CoverSize;
 use crate::model::Track;
 use crate::player::{Player, PlayerCommand as Cmd, PlayerSnapshot};
@@ -80,7 +79,7 @@ impl Gui {
                 ui.c,
                 Icon::Verified,
                 Rect::new(tx, ty + 1.0, 20.0, 20.0),
-                Color::rgba8(77, 145, 255, 255),
+                t.accent,
             );
             ui.label(
                 "Verified Artist",
@@ -150,13 +149,13 @@ impl Gui {
             play.x + 28.0,
             play.y + 28.0,
             28.0 * (1.0 + 0.04 * ph),
-            spotify_green().lerp(Color::WHITE, 0.1 * ph),
+            t.accent.lerp(Color::WHITE, 0.1 * ph),
         );
         icons::draw(
             ui.c,
             Icon::Play,
             Rect::new(play.x + 17.0, play.y + 16.0, 24.0, 24.0),
-            Color::BLACK,
+            t.background,
         );
         ui.pointer |= ui.hovered(play);
         if ui.clicked(play) && !page.top_tracks.is_empty() {

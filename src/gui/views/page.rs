@@ -373,14 +373,14 @@ pub(crate) fn play_button(ui: &mut Ui, id: u64, cover: Rect, h: f32) -> bool {
         b.x + s / 2.0,
         b.y + s / 2.0,
         s / 2.0 * (1.0 + 0.06 * bt),
-        spotify_green().lerp(Color::WHITE, 0.12 * bt),
+        ui.theme.accent.lerp(Color::WHITE, 0.12 * bt),
     );
     let i = s * 0.42;
     icons::draw(
         ui.c,
         Icon::Play,
         Rect::new(b.x + (s - i) / 2.0 + 1.0, b.y + (s - i) / 2.0, i, i),
-        Color::BLACK,
+        ui.theme.background,
     );
     ui.c.pop_fx();
     ui.c.set_layer(0);

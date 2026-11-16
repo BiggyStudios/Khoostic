@@ -267,7 +267,7 @@ impl Gui {
                     tw,
                     t.font_size,
                     Weight::Medium,
-                    if active { spotify_green() } else { t.fg }.alpha(alpha),
+                    if active { t.accent } else { t.fg }.alpha(alpha),
                 );
                 let sx = tx;
                 ui.label(
@@ -452,12 +452,7 @@ impl Gui {
 /// A library row's picture: cover art, a round portrait, or Liked Songs' heart tile.
 fn draw_art(ui: &mut Ui, art: Rect, item: &LibItem) {
     if item.key == "liked" {
-        ui.c.gradient(
-            art,
-            Color::rgba8(80, 56, 230, 255),
-            Color::rgba8(150, 200, 210, 255),
-            6.0,
-        );
+        ui.c.gradient(art, ui.theme.gradient(0.7), ui.theme.accent, 6.0);
         let s = art.w * 0.42;
         icons::draw(
             ui.c,
