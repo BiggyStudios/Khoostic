@@ -84,8 +84,8 @@ impl Headless {
         }
     }
 
-    /// One GUI frame; frames the renderer must see (the copy a theme swipe starts from) are
-    /// drawn offscreen right away.
+    /// One GUI frame. Frames the renderer must see (the copy a theme swipe starts from, the 3D
+    /// visualizer, whose simulation runs on the GPU) are drawn offscreen right away.
     fn step(&mut self, input: &Input, player: &Player) -> anyhow::Result<Canvas> {
         let mut canvas = Canvas::new(self.size, self.scale, self.gui.theme.background);
         let gfx = app::Gfx {
@@ -93,8 +93,8 @@ impl Headless {
             images: &mut self.renderer.images,
         };
         self.gui.frame(&mut canvas, gfx, input, player);
-        if canvas.snapshot {
-            self.renderer.capture(&canvas, self.size)?;
+        if canvas.snapshot || canvas.swarm.is_some() {
+            self.renderer.render_offscreen(&canvas, self.size)?;
         }
         Ok(canvas)
     }

@@ -201,6 +201,13 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
     shot(&mut h, "visualizer", &keys(&[Key::Char('6')]))?;
+    // 3D: the bars crumble into the storm, then fly back.
+    mid(&mut h, "viz3d-1-crumble", &click(860.0, 109.0, false), 450)?;
+    mid(&mut h, "viz3d-2-rising", &Input::default(), 900)?;
+    mid(&mut h, "viz3d-3-storm", &Input::default(), 2500)?;
+    mid(&mut h, "viz3d-4-storm", &Input::default(), 3000)?;
+    mid(&mut h, "viz3d-5-back", &click(800.0, 109.0, false), 900)?;
+    mid(&mut h, "viz3d-6-flat", &Input::default(), 1600)?;
     h.frame(&keys(&[Key::Char('1')]), &player)?;
     h.frame(&keys(&[Key::Char('4')]), &player)?;
     let hover = |x: f32, y: f32| Input {

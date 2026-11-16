@@ -1,12 +1,138 @@
-//! The full-page visualizer.
+//! The full-page visualizer: spectrum bars, or the 3D storm of cubes they break apart into
+//! (switch at the top right). Going 3D, the bars are rebuilt out of cubes in place, crumble
+//! from the top and get swept up while the camera swings into the room; going back, the cubes
+//! fly home into bars and the flat bars take over again.
+
+use std::time::Instant;
 
 use crate::audio::{AnalysisFrame, BANDS};
-use crate::gui::app::Gui;
+use crate::gui::app::{Gui, PAD};
 use crate::gui::render::Rect;
-use crate::gui::ui::Ui;
+use crate::gui::render::swarm::{Mode, SwarmFrame};
+use crate::gui::ui::{Ui, anim};
+
+/// How long the bars take to fall back together (the flat bars fade in after).
+const ASSEMBLE: f32 = 1.9;
+const FADE: f32 = 0.25;
+
+#[derive(Default)]
+pub(crate) struct Viz3d {
+    stage: Stage,
+    /// Seconds the storm has run; drives its flow and the camera drift.
+    time: f32,
+}
+
+#[derive(Default, Clone, Copy)]
+enum Stage {
+    #[default]
+    Flat,
+    /// Going (or gone) 3D since then.
+    Rising(Instant),
+    /// Going back to the flat bars since then.
+    Falling(Instant),
+}
 
 impl Gui {
     pub(crate) fn visualizer(&mut self, ui: &mut Ui, r: Rect, a: &AnalysisFrame, dt: f32) {
+        let t = ui.theme.clone();
+        // What the 3D side should show now, and how opaque it is over the flat bars.
+        let scene = match self.viz3d.stage {
+            Stage::Flat => None,
+            Stage::Rising(at) => {
+                let s = at.elapsed().as_secs_f32();
+                Some((
+                    Mode::Storm,
+                    s,
+                    ((s - 0.35) / 1.9).clamp(0.0, 1.0),
+                    ((s - 1.3) / 1.2).clamp(0.0, 1.0),
+                    (s / 0.15).clamp(0.0, 1.0),
+                ))
+            }
+            Stage::Falling(at) => {
+                let s = at.elapsed().as_secs_f32();
+                if s > ASSEMBLE + FADE {
+                    self.viz3d.stage = Stage::Flat;
+                    None
+                } else {
+                    Some((
+                        Mode::Assemble,
+                        s,
+                        1.0 - (s / 1.5).clamp(0.0, 1.0),
+                        1.0 - (s / 0.6).clamp(0.0, 1.0),
+                        1.0 - ((s - ASSEMBLE) / FADE).clamp(0.0, 1.0),
+                    ))
+                }
+            }
+        };
+
+        // The flat bars, under the 3D picture while it fades in or out.
+        if scene.is_none_or(|s| s.4 < 1.0) {
+            self.bars(ui, r, a, dt);
+        }
+        if let Some((mode, phase, depth, walls, opacity)) = scene {
+            self.viz3d.time += dt;
+            ui.anim.keep_alive();
+            // Edge to edge across the page panel; the bars keep their place inside it.
+            let view = Rect::new(r.x - PAD, r.y - PAD + 4.0, r.w + 2.0 * PAD, r.h + PAD + 4.0);
+            let frame = SwarmFrame {
+                size: (0, 0),
+                logical: (0.0, 0.0),
+                bars: [r.x - view.x, r.y - view.y, r.w, r.h],
+                time: self.viz3d.time,
+                dt,
+                mode,
+                phase,
+                depth,
+                walls,
+                bands: a.bands,
+                bass: a.bass,
+                mid: a.mid,
+                treble: a.treble,
+                beat: a.beat,
+                spectrum: [
+                    t.gradient(0.0),
+                    t.gradient(1.0 / 3.0),
+                    t.gradient(2.0 / 3.0),
+                    t.gradient(1.0),
+                ],
+                accent: t.accent,
+                surface: t.surface,
+                fg: t.fg,
+            };
+            ui.c.swarm(view, frame, 12.0, opacity);
+        }
+
+        // 2D / 3D, top right, above the picture.
+        let three = matches!(self.viz3d.stage, Stage::Rising(_));
+        let size = t.font_size - 1.0;
+        let seg = ui
+            .measure("2D", size, crate::gui::render::Weight::Medium)
+            .max(ui.measure("3D", size, crate::gui::render::Weight::Medium))
+            + 30.0;
+        let w = 2.0 * seg + 6.0;
+        ui.c.set_layer(1);
+        // A solid backing so it reads over bright cubes.
+        ui.c.rect(
+            Rect::new(r.right() - w, r.y, w, 34.0),
+            t.surface.alpha(0.85),
+            17.0,
+        );
+        let picked = ui.segmented(
+            anim::id("viz-3d"),
+            r.right() - w,
+            r.y,
+            &["2D", "3D"],
+            three as usize,
+        );
+        ui.c.set_layer(0);
+        match picked {
+            Some(1) if !three => self.viz3d.stage = Stage::Rising(Instant::now()),
+            Some(0) if three => self.viz3d.stage = Stage::Falling(Instant::now()),
+            _ => {}
+        }
+    }
+
+    fn bars(&mut self, ui: &mut Ui, r: Rect, a: &AnalysisFrame, dt: f32) {
         let t = ui.theme.clone();
         self.pulse = (self.pulse - dt * 2.5).max(a.beat);
         let (cx, cy) = r.center();

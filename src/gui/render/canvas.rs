@@ -248,6 +248,8 @@ pub struct Canvas {
     pub snapshot: bool,
     /// Swipe the kept frame away over this one.
     pub wipe: Option<crate::gui::render::wipe::WipeFrame>,
+    /// The 3D visualizer to render (and show where [`Canvas::swarm`] put it).
+    pub swarm: Option<crate::gui::render::swarm::SwarmFrame>,
     layer: usize,
     clip: Vec<Rect>,
     fx: Vec<Fx>,
@@ -263,6 +265,7 @@ impl Canvas {
             layers: Default::default(),
             snapshot: false,
             wipe: None,
+            swarm: None,
             layer: 0,
             clip: vec![Rect::new(0.0, 0.0, size.0, size.1)],
             fx: vec![Fx {
@@ -478,6 +481,26 @@ impl Canvas {
             clip: self.clip_px(),
         };
         self.layers[self.layer].images.push(cmd);
+    }
+
+    /// Shows the 3D visualizer in `r` (rendered this frame from `frame`).
+    pub fn swarm(
+        &mut self,
+        r: Rect,
+        mut frame: crate::gui::render::swarm::SwarmFrame,
+        radius: f32,
+        opacity: f32,
+    ) {
+        let s = self.scale;
+        frame.size = ((r.w * s).round() as u32, (r.h * s).round() as u32);
+        frame.logical = (r.w, r.h);
+        self.swarm = Some(frame);
+        self.image(
+            r,
+            crate::gui::render::images::ImageId::SCENE,
+            radius,
+            opacity,
+        );
     }
 
     /// Queues text with its top-left at `(x, y)` (logical). Measuring/alignment is done by the

@@ -191,6 +191,8 @@ pub struct Gui {
     pub(crate) toast: Option<(String, Instant)>,
     pub(crate) last_frame: Instant,
     pub(crate) pulse: f32,
+    /// The visualizer page's 3D mode.
+    pub(crate) viz3d: crate::gui::views::visualizer::Viz3d,
     pub spotify: Option<Arc<crate::spotify::Spotify>>,
     pub(crate) fetch: Option<crate::gui::ui::UrlFetcher>,
     pub(crate) sp: crate::gui::spotify::SpState,
@@ -307,6 +309,7 @@ impl Gui {
             toast: None,
             last_frame: Instant::now(),
             pulse: 0.0,
+            viz3d: Default::default(),
             spotify,
             fetch,
             sp: Default::default(),

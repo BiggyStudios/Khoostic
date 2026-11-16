@@ -14,6 +14,11 @@ type Loader = Box<dyn FnOnce() -> Option<PathBuf> + Send>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageId(u64);
 
+impl ImageId {
+    /// The 3D visualizer's picture (see `render::swarm`).
+    pub const SCENE: ImageId = ImageId(u64::MAX);
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Instance {
@@ -222,6 +227,25 @@ impl ImageStore {
         }
         self.evict();
         changed
+    }
+
+    /// Shows a texture made elsewhere (rendered on the GPU) under `id`.
+    pub fn set_external(&mut self, id: ImageId, view: &wgpu::TextureView) {
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("external image"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.gpu.insert(id, GpuImage { bind_group });
     }
 
     pub fn is_loading(&self) -> bool {

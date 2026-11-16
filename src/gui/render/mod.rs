@@ -6,6 +6,7 @@ pub mod canvas;
 pub mod gpu;
 pub mod images;
 pub mod painter;
+pub mod swarm;
 pub mod text;
 pub mod wipe;
 
@@ -27,6 +28,10 @@ pub struct Renderer {
     pub text: TextSystem,
     pub images: ImageStore,
     wipe: wipe::Wipe,
+    /// Made the first time the 3D visualizer shows.
+    swarm: Option<swarm::Swarm>,
+    /// Where `render_offscreen` draws.
+    scratch: Option<(wgpu::Texture, (u32, u32))>,
 }
 
 impl Renderer {
@@ -42,6 +47,8 @@ impl Renderer {
             text,
             images,
             wipe,
+            swarm: None,
+            scratch: None,
         }
     }
 
@@ -58,6 +65,10 @@ impl Renderer {
             size,
             canvas.layers.iter().map(|l| l.quads.as_slice()),
         );
+        if let Some(f) = &canvas.swarm {
+            let swarm = self.swarm.get_or_insert_with(|| swarm::Swarm::new(device));
+            swarm.prepare(device, queue, &mut self.images, f);
+        }
         self.text.prepare(device, queue, size, &canvas.layers)?;
         let image_layers: Vec<&[crate::gui::render::ImageCmd]> =
             canvas.layers.iter().map(|l| l.images.as_slice()).collect();
@@ -75,6 +86,11 @@ impl Renderer {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("frame"),
         });
+        if canvas.swarm.is_some()
+            && let Some(swarm) = &mut self.swarm
+        {
+            swarm.encode(&mut encoder);
+        }
         if canvas.snapshot {
             // The same frame again into the swipe's copy (the next frames wipe it away).
             let view = self.wipe.snapshot_target(&self.gpu.device, size).clone();
@@ -100,6 +116,35 @@ impl Renderer {
             self.text.render(pass, layer)?;
         }
         Ok(())
+    }
+
+    /// Renders offscreen without reading anything back (headless runs that need the GPU side
+    /// to move along between captures: the 3D visualizer, theme swipes).
+    pub fn render_offscreen(&mut self, canvas: &Canvas, size: (u32, u32)) -> anyhow::Result<()> {
+        if self.scratch.as_ref().is_none_or(|(_, s)| *s != size) {
+            let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("offscreen"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            self.scratch = Some((texture, size));
+        }
+        let view = self
+            .scratch
+            .as_ref()
+            .expect("just made")
+            .0
+            .create_view(&Default::default());
+        self.render(canvas, &view, size)
     }
 
     /// Renders offscreen and returns tightly packed RGBA8 (sRGB) pixels.
