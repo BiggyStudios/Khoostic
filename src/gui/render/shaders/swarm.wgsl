@@ -42,6 +42,9 @@ struct Scene {
     // x: music time (runs faster when the music is loud), drives the wave; y: 1 on the frame a
     // beat lands; z: how recently one landed (1, fading); w: bass punch (sudden rises)
     motion: vec4<f32>,
+    // x: how far the ribbon has spun (mostly the mids); y: mid punch (sudden rises); z: how
+    // full the music is overall (smoothed, 0..1)
+    motion2: vec4<f32>,
 };
 
 struct Cube {
@@ -248,12 +251,15 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     // a looser spray around the same wave. Nothing comes out of a single point.
     let tau = u.motion.x;
     let lag = seed.x * 3.4;
-    let here = path(tau - lag);
-    let tangent = safe_normalize(path(tau - lag + 0.05) - here);
+    // The wave roams wider when the music is full.
+    let reach = 0.8 + 0.5 * u.motion2.z;
+    let here = path(tau - lag) * reach;
+    let tangent = safe_normalize(path(tau - lag + 0.05) * reach - here);
     let n1 = safe_normalize(cross(tangent, vec3<f32>(0.0, 1.0, 0.3)));
     let n2 = cross(tangent, n1);
     // A ribbon: wide one way, thin the other, twisting along its length.
-    let twist = lag * 1.3 + tau * 0.4;
+    // Spinning around its own length, mostly with the mids.
+    let twist = lag * 1.3 + u.motion2.x;
     let wide = n1 * cos(twist) + n2 * sin(twist);
     let thin = cross(tangent, wide);
     let across = (seed.y * 2.0 - 1.0) * (0.12 + 0.12 * lag);
@@ -279,6 +285,9 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     // Sudden bass (not just loud bass) keeps blowing the ribbon outward.
     v += blast * punch * select(6.0, 10.0, spark) * dt;
+    // Sudden mids whip the cubes around the spine.
+    let mid_punch = u.motion2.y;
+    v += (cross(tangent, blast) * 9.0 + blast * 2.0) * mid_punch * select(1.0, 1.5, spark) * dt;
     // Sand blowing about in the wave; harder when this cube's band is loud.
     let flow = curl(p * 0.9 + seed * 0.2, t * (0.6 + mid * 0.8));
     v += flow * (0.06 + 0.3 * mine + 0.15 * treble) * select(3.0, 5.0, spark) * dt;

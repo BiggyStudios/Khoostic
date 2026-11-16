@@ -32,6 +32,12 @@ pub struct SwarmFrame {
     pub impact: f32,
     /// Sudden rises in the bass (0..1).
     pub punch: f32,
+    /// How far the ribbon has spun around itself (radians; mostly the mids).
+    pub spin: f32,
+    /// Sudden rises in the mids (0..1).
+    pub mid_punch: f32,
+    /// How full the music is overall (smoothed, 0..1).
+    pub fullness: f32,
     pub dt: f32,
     pub mode: Mode,
     /// Seconds since `mode` started.
@@ -76,6 +82,7 @@ struct Uniforms {
     fg: [f32; 4],
     bands: [[f32; 4]; 16],
     motion: [f32; 4],
+    motion2: [f32; 4],
 }
 
 struct Targets {
@@ -314,6 +321,7 @@ impl Swarm {
             fg: lin(f.fg),
             bands,
             motion: [f.tau, f.kick as u8 as f32, f.impact, f.punch],
+            motion2: [f.spin, f.mid_punch, f.fullness, 0.0],
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         self.pending = true;
@@ -472,6 +480,9 @@ mod tests {
             kick: false,
             impact: 0.0,
             punch: 0.0,
+            spin: 0.0,
+            mid_punch: 0.0,
+            fullness: 0.0,
             dt: 0.016,
             mode: Mode::Bars,
             phase: 0.0,

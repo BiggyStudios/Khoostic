@@ -27,6 +27,10 @@ pub(crate) struct Viz3d {
     beats: u64,
     impact: f32,
     slow_bass: f32,
+    /// The ribbon's spin, a slow mids average (for mid punches) and how full the music is.
+    spin: f32,
+    slow_mid: f32,
+    fullness: f32,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -88,8 +92,15 @@ impl Gui {
             };
             v.slow_bass += (a.bass - v.slow_bass) * (1.0 - (-dt * 2.5).exp());
             let punch = ((a.bass - v.slow_bass) * 3.0).clamp(0.0, 1.0);
-            // The wave swings faster with the music and lunges on every hit.
-            v.tau += dt * (0.5 + 0.9 * a.bass + 0.5 * a.mid + 3.5 * v.impact * v.impact);
+            v.slow_mid += (a.mid - v.slow_mid) * (1.0 - (-dt * 3.0).exp());
+            let mid_punch = ((a.mid - v.slow_mid) * 4.0).clamp(0.0, 1.0);
+            let level = (a.bass + a.mid + a.treble) / 3.0;
+            v.fullness += (level - v.fullness) * (1.0 - (-dt * 1.5).exp());
+            // Spins with the mids (and a little treble), always a little.
+            v.spin += dt * (0.25 + 2.6 * a.mid + 1.2 * a.treble + 4.0 * mid_punch);
+            // Swings faster with the whole mix and lunges on every hit.
+            v.tau += dt
+                * (0.45 + 0.8 * a.bass + 1.3 * a.mid + 0.5 * a.treble + 3.5 * v.impact * v.impact);
             let impact = v.impact;
             ui.anim.keep_alive();
             // Edge to edge across the page panel; the bars keep their place inside it.
@@ -103,6 +114,9 @@ impl Gui {
                 kick,
                 impact,
                 punch,
+                spin: self.viz3d.spin,
+                mid_punch,
+                fullness: self.viz3d.fullness,
                 dt,
                 mode,
                 phase,
