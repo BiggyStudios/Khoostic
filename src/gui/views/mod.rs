@@ -6,6 +6,7 @@
 pub mod artist;
 pub mod files;
 pub mod grid;
+pub mod jam;
 pub mod library;
 pub mod lists;
 pub mod lyrics;
@@ -66,6 +67,7 @@ impl Gui {
             }
             View::Lyrics => self.lyrics_view(ui, r, player, snap),
             View::Settings => self.settings_view(ui, r, player, snap),
+            View::Jam => self.jam_view(ui, r),
         }
     }
 
@@ -144,6 +146,7 @@ impl Gui {
             View::Visualizer
             | View::Playlists
             | View::Settings
+            | View::Jam
             | View::SpotifyArtist { .. }
             | View::Lyrics => return,
             View::LocalPlaylist(_)

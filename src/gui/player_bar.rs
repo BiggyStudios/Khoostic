@@ -384,6 +384,7 @@ impl Gui {
         for button in [
             Button::Queue,
             Button::Lyrics,
+            Button::Jam,
             Button::Autoplay,
             Button::Radio,
             Button::Visualizer,
@@ -394,6 +395,11 @@ impl Gui {
             let (icon, on, id) = match button {
                 Button::Queue => (Icon::Queue, self.queue_open, "np-queue"),
                 Button::Lyrics => (Icon::Mic, self.view == View::Lyrics, "np-lyrics"),
+                Button::Jam => (
+                    Icon::Jam,
+                    self.view == View::Jam || self.jams.as_ref().is_some_and(|j| j.active()),
+                    "np-jam",
+                ),
                 Button::Autoplay => (Icon::Autoplay, self.discovery.autoplay(), "np-autoplay"),
                 Button::Radio => (Icon::Radio, self.radio.is_some(), "np-radio"),
                 Button::Visualizer => (Icon::Visualizer, self.view == View::Visualizer, "np-vis"),
@@ -411,6 +417,13 @@ impl Gui {
                 match button {
                     Button::Queue => self.queue_open = !self.queue_open,
                     Button::Lyrics => self.toggle_lyrics(),
+                    Button::Jam => {
+                        if self.view == View::Jam {
+                            self.back();
+                        } else {
+                            self.navigate(View::Jam);
+                        }
+                    }
                     Button::Autoplay => {
                         let auto = !on;
                         self.discovery.set_autoplay(auto);
@@ -440,7 +453,7 @@ impl Gui {
             if o > 0.01
                 && matches!(
                     button,
-                    Button::Autoplay | Button::Lyrics | Button::Visualizer
+                    Button::Autoplay | Button::Lyrics | Button::Visualizer | Button::Jam
                 )
             {
                 ui.c.circle(bx, ay + 15.0, 2.0 * o, accent.alpha(o));
@@ -455,6 +468,7 @@ impl Gui {
 enum Button {
     Queue,
     Lyrics,
+    Jam,
     Autoplay,
     Radio,
     Visualizer,

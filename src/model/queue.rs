@@ -224,6 +224,34 @@ impl Queue {
         self.bump();
     }
 
+    /// Entries in play order from `before` ahead of the current one to `after` past it (from
+    /// the start when nothing is current).
+    pub fn play_window(&self, before: usize, after: usize) -> Vec<QueueEntry> {
+        let c = self.cursor.unwrap_or(0);
+        let lo = c.saturating_sub(before);
+        let hi = (c + after + 1).min(self.order.len());
+        self.order[lo.min(hi)..hi]
+            .iter()
+            .filter_map(|&id| self.get(id).cloned())
+            .collect()
+    }
+
+    /// Becomes a copy of another queue (a jam host's), entry ids included, in its play order.
+    pub fn mirror(
+        &mut self,
+        entries: Vec<QueueEntry>,
+        current: Option<EntryId>,
+        repeat: RepeatMode,
+    ) {
+        self.next_id = entries.iter().map(|e| e.id.0).fold(self.next_id, u64::max);
+        self.order = entries.iter().map(|e| e.id).collect();
+        self.entries = entries;
+        self.cursor = current.and_then(|id| self.order.iter().position(|&o| o == id));
+        self.shuffle = false;
+        self.repeat = repeat;
+        self.bump();
+    }
+
     /// Moves an entry in user-visible order (drag and drop / `ddp` style moves).
     pub fn move_entry(&mut self, from: usize, to: usize) {
         if from >= self.entries.len() || to >= self.entries.len() || from == to {
@@ -456,5 +484,32 @@ mod tests {
         q.jump_to(ids[0]);
         q.move_entry(2, 1);
         assert_eq!(q.peek_next().unwrap().id, ids[2]);
+    }
+
+    #[test]
+    fn a_mirror_is_the_hosts_play_window_with_its_ids() {
+        let (mut host, ids) = q(10);
+        host.set_shuffle(true);
+        host.jump_to(ids[5]);
+        let window = host.play_window(2, 3);
+        let c = host.cursor.unwrap();
+        let want: Vec<EntryId> = host.order[c.saturating_sub(2)..(c + 4).min(10)].to_vec();
+        assert_eq!(window.iter().map(|e| e.id).collect::<Vec<_>>(), want);
+        let at = window.iter().position(|e| e.id == ids[5]).unwrap();
+
+        let (mut guest, _) = q(2);
+        guest.mirror(window.clone(), Some(ids[5]), RepeatMode::All);
+        let got: Vec<EntryId> = guest.entries().iter().map(|e| e.id).collect();
+        let want: Vec<EntryId> = window.iter().map(|e| e.id).collect();
+        assert_eq!(got, want);
+        assert_eq!(guest.current_id(), Some(ids[5]));
+        assert!(!guest.shuffle());
+        assert_eq!(
+            guest.peek_next().map(|e| e.id),
+            window.get(at + 1).map(|e| e.id)
+        );
+        // New entries never reuse the host's ids.
+        let fresh = guest.push(Track::from_path("x.flac"));
+        assert!(fresh.0 > ids.iter().map(|i| i.0).max().unwrap());
     }
 }

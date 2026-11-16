@@ -7,7 +7,7 @@
 //!      └──── snapshots ──────┘  └── sources: local files (library), Spotify
 //!
 //!  services: library index, Spotify, Last.fm scrobbling, genres (MusicBrainz, Deezer), discovery
-//!            (radio, autoplay), lyrics
+//!            (radio, autoplay), lyrics, Discord status, jams (listening together)
 //! ```
 //!
 //! Modules are layered: each one only uses modules from the groups listed before it.
@@ -30,6 +30,7 @@ pub mod spotify;
 
 // Built on the services above.
 pub mod discovery;
+pub mod jam;
 pub mod lyrics;
 pub mod services;
 

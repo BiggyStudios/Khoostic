@@ -71,6 +71,8 @@ pub enum View {
     /// Lyrics of the playing song.
     Lyrics,
     Settings,
+    /// Listening together.
+    Jam,
 }
 
 impl View {
@@ -219,6 +221,9 @@ pub struct Gui {
     /// Discord status (None in headless runs).
     pub(crate) discord: Option<Arc<crate::discord::Discord>>,
     pub(crate) discord_id: TextField,
+    /// Listening together (None in headless runs).
+    pub(crate) jams: Option<Arc<crate::jam::Jams>>,
+    pub(crate) jam_invite: TextField,
     pub(crate) anims: Anims,
     /// The view the page transition last started for.
     pub(crate) shown_view: View,
@@ -340,6 +345,8 @@ impl Gui {
             lf_secret: TextField::secret(),
             discord: None,
             discord_id: TextField::default(),
+            jams: None,
+            jam_invite: TextField::default(),
             anims: Anims::default(),
             shown_view: View::Albums,
             view_since: Instant::now() - Duration::from_secs(1),
@@ -631,6 +638,7 @@ impl Gui {
             || self.lf_secret.focused
             || self.preset_name.focused
             || self.discord_id.focused
+            || self.jam_invite.focused
     }
 
     /// Starts building a radio from `seed`; it replaces what's coming up when ready.

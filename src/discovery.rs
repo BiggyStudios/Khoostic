@@ -162,6 +162,19 @@ impl Discovery {
             })
     }
 
+    /// A playable copy of a song: the library's, else Spotify's (this waits for the search).
+    pub fn find_song(&self, artist: &str, title: &str) -> Option<Track> {
+        if let Some(t) = self.find_local(artist, title) {
+            return Some(t);
+        }
+        let found = self
+            .spotify()?
+            .search(&format!("{artist} {}", search_title(title)), 5)
+            .wait()
+            .ok()?;
+        found.tracks.into_iter().find(|t| is_song(t, artist, title))
+    }
+
     /// The library's copy of a song, if there is one.
     fn find_local(&self, artist: &str, title: &str) -> Option<Track> {
         self.library
@@ -243,7 +256,7 @@ impl Discovery {
                 match result {
                     Ok(tracks) if !tracks.is_empty() => {
                         let still_at_end = player.queue().read().peek_next().is_none();
-                        if still_at_end && self.autoplay() {
+                        if still_at_end && self.autoplay() && !player.routed() {
                             tracing::info!(n = tracks.len(), "autoplay: adding similar songs");
                             let stopped = player.snapshot().state == State::Stopped;
                             player.send(if stopped {
@@ -258,7 +271,8 @@ impl Discovery {
                 }
                 continue;
             }
-            if !self.autoplay() {
+            if !self.autoplay() || player.routed() {
+                // In someone else's jam the host keeps the music going.
                 continue;
             }
             let snap = player.snapshot();

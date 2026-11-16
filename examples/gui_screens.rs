@@ -84,7 +84,7 @@ fn main() -> anyhow::Result<()> {
         &config,
         library.clone(),
         Some(spotify.clone()),
-        discovery,
+        discovery.clone(),
         (1280, 800),
         1.0,
     )?;
@@ -238,6 +238,49 @@ fn main() -> anyhow::Result<()> {
             ..Default::default()
         },
     )?;
+    // Jam: the page (from its player-bar button), hosting with a friend in, the friend's view.
+    // Both listen on this computer only (no firewall prompt).
+    let jam_config = |name: &str| khoostic::config::JamConfig {
+        name: name.into(),
+        port: 47610,
+        bind: "127.0.0.1".into(),
+    };
+    let jams = khoostic::jam::Jams::new(
+        &jam_config("Alex"),
+        player.handle(),
+        discovery.clone(),
+        None,
+        None,
+    );
+    h.set_jams(jams.clone());
+    shot(&mut h, "jam", &click(999.0, 752.0, false))?;
+    jams.host();
+    let friend = Player::start(
+        EngineConfig {
+            volume: 0.0,
+            ..Default::default()
+        },
+        Resolvers::with_defaults(),
+    )?;
+    let friend_jams = khoostic::jam::Jams::new(
+        &jam_config("Sam"),
+        friend.handle(),
+        discovery.clone(),
+        None,
+        None,
+    );
+    if let khoostic::jam::JamStatus::Hosting { invite, .. } = jams.status() {
+        friend_jams.join(&invite)?;
+    }
+    std::thread::sleep(Duration::from_millis(3000));
+    shot(&mut h, "jam-hosting", &Input::default())?;
+    h.set_jams(friend_jams.clone());
+    shot(&mut h, "jam-guest", &Input::default())?;
+    friend_jams.leave();
+    jams.leave();
+    h.set_jams(jams.clone());
+    shot(&mut h, "jam-idle", &Input::default())?;
+    h.frame(&click(999.0, 752.0, false), &player)?;
     shot(&mut h, "visualizer", &keys(&[Key::Char('6')]))?;
     // 3D: the bars crumble into the storm, then fly back.
     mid(&mut h, "viz3d-1-crumble", &click(860.0, 109.0, false), 450)?;

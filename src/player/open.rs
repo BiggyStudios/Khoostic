@@ -38,6 +38,8 @@ pub(crate) struct Job {
     pub id: EntryId,
     pub track: Arc<Track>,
     pub purpose: Purpose,
+    /// Start this far in (jam guests joining mid-song).
+    pub start_at: Duration,
 }
 
 pub(crate) struct Opened {
@@ -96,7 +98,12 @@ fn run(resolvers: &Resolvers, jobs: &Receiver<Job>, done: &Sender<Opened>) {
 
         let mut attempt = 0;
         let result = loop {
-            match resolvers.open(&job.track) {
+            match resolvers.open(&job.track).map(|mut s| {
+                if !job.start_at.is_zero() {
+                    let _ = s.seek(job.start_at);
+                }
+                s
+            }) {
                 Err(e) if e.is_temporary() && attempt < RETRY_AFTER.len() => {
                     tracing::info!(track = %job.track.title, "retrying after: {e}");
                     match jobs.recv_timeout(RETRY_AFTER[attempt]) {
@@ -161,6 +168,7 @@ mod tests {
             id: EntryId(ticket),
             track: Arc::new(track),
             purpose,
+            start_at: Duration::ZERO,
         }
     }
 

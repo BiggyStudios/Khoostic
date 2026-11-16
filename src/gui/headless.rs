@@ -42,6 +42,11 @@ impl Headless {
         })
     }
 
+    /// Turns on the Jam page (off by default in headless runs).
+    pub fn set_jams(&mut self, jams: Arc<crate::jam::Jams>) {
+        self.gui.jams = Some(jams);
+    }
+
     /// Shows the Discord settings (off by default in headless runs).
     pub fn set_discord(&mut self, discord: Arc<crate::discord::Discord>) {
         self.gui.discord = Some(discord);

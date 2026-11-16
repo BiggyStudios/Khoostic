@@ -71,6 +71,51 @@ pub enum PlayerCommand {
     SetShuffle(bool),
     SetRepeat(RepeatMode),
     CycleRepeat,
+    /// Jams: make the queue a copy of the host's and play its current entry (from `position`
+    /// when it has to start it; one that's already playing carries on).
+    Mirror(Box<Mirror>),
+    /// Whether a song that won't open is skipped (jam guests wait for the host instead).
+    SetAutoSkip(bool),
+}
+
+/// See [`PlayerCommand::Mirror`].
+#[derive(Debug, Clone)]
+pub struct Mirror {
+    /// In play order.
+    pub entries: Vec<QueueEntry>,
+    pub current: Option<EntryId>,
+    pub repeat: RepeatMode,
+    pub position: Duration,
+    pub playing: bool,
+}
+
+impl PlayerCommand {
+    /// Commands that change what everyone in a jam hears (everything but volume and the
+    /// jam's own commands); a jam guest sends these to the host.
+    pub fn shared(&self) -> bool {
+        !matches!(
+            self,
+            Self::SetVolume(_) | Self::VolumeBy(_) | Self::Mirror(_) | Self::SetAutoSkip(_)
+        )
+    }
+}
+
+/// Where commands go: the player thread, or (for shared ones, while following a jam) the jam.
+struct Link {
+    tx: Sender<PlayerCommand>,
+    route: RwLock<Option<Sender<PlayerCommand>>>,
+}
+
+impl Link {
+    fn send(&self, cmd: PlayerCommand) {
+        if cmd.shared()
+            && let Some(route) = &*self.route.read()
+        {
+            let _ = route.send(cmd);
+            return;
+        }
+        let _ = self.tx.send(cmd);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +142,7 @@ pub struct PlayerSnapshot {
 }
 
 pub struct Player {
-    tx: Sender<PlayerCommand>,
+    link: Arc<Link>,
     stop: Sender<()>,
     events: Receiver<PlayerEvent>,
     engine: Arc<EngineHandle>,
@@ -128,13 +173,17 @@ impl Player {
             preloaded: None,
             active: false,
             failures: 0,
+            auto_skip: true,
         };
         let thread = thread::Builder::new()
             .name("khoostic-player".into())
             .spawn(move || ctl.run(rx, stop_rx, opened))?;
 
         Ok(Self {
-            tx,
+            link: Arc::new(Link {
+                tx,
+                route: RwLock::new(None),
+            }),
             stop,
             events,
             engine,
@@ -145,7 +194,7 @@ impl Player {
     }
 
     pub fn send(&self, cmd: PlayerCommand) {
-        let _ = self.tx.send(cmd);
+        self.link.send(cmd);
     }
 
     pub fn events(&self) -> &Receiver<PlayerEvent> {
@@ -169,7 +218,7 @@ impl Player {
     /// to watch playback and send commands from their own threads.
     pub fn handle(&self) -> PlayerHandle {
         PlayerHandle {
-            tx: self.tx.clone(),
+            link: self.link.clone(),
             engine: self.engine.clone(),
             queue: self.queue.clone(),
             loading: self.loading.clone(),
@@ -180,7 +229,7 @@ impl Player {
 /// See [`Player::handle`]. Keeps working until the [`Player`] is dropped.
 #[derive(Clone)]
 pub struct PlayerHandle {
-    tx: Sender<PlayerCommand>,
+    link: Arc<Link>,
     engine: Arc<EngineHandle>,
     queue: Arc<RwLock<Queue>>,
     loading: Arc<RwLock<Option<EntryId>>>,
@@ -188,7 +237,22 @@ pub struct PlayerHandle {
 
 impl PlayerHandle {
     pub fn send(&self, cmd: PlayerCommand) {
-        let _ = self.tx.send(cmd);
+        self.link.send(cmd);
+    }
+
+    /// Straight to this player, even while following a jam (the jam itself uses this).
+    pub fn send_local(&self, cmd: PlayerCommand) {
+        let _ = self.link.tx.send(cmd);
+    }
+
+    /// Sends shared commands (see [`PlayerCommand::shared`]) to `route` instead, or stops.
+    pub fn set_route(&self, route: Option<Sender<PlayerCommand>>) {
+        *self.link.route.write() = route;
+    }
+
+    /// Following someone else's jam: background helpers (autoplay) stay out of it.
+    pub fn routed(&self) -> bool {
+        self.link.route.read().is_some()
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
@@ -281,6 +345,8 @@ struct Controller {
     active: bool,
     /// Songs that failed to open since the last one that played or the last user command.
     failures: u32,
+    /// Skip songs that won't open (off for jam guests, who wait for the host).
+    auto_skip: bool,
 }
 
 impl Controller {
@@ -477,6 +543,8 @@ impl Controller {
                 self.queue.write().set_repeat(mode);
                 self.refresh_preload();
             }
+            SetAutoSkip(on) => self.auto_skip = on,
+            Mirror(m) => self.mirror(*m),
         }
     }
 
@@ -579,6 +647,10 @@ impl Controller {
     }
 
     fn load_current_with(&mut self, paused: bool) {
+        self.load_current_at(paused, Duration::ZERO);
+    }
+
+    fn load_current_at(&mut self, paused: bool, start_at: Duration) {
         let Some(entry) = self.queue.read().current().cloned() else {
             self.stop();
             return;
@@ -600,6 +672,7 @@ impl Controller {
             id: entry.id,
             track: entry.track,
             purpose: Purpose::Play,
+            start_at,
         });
     }
 
@@ -654,6 +727,10 @@ impl Controller {
             return;
         }
         self.emit(PlayerEvent::Error(format!("{title}: {e}")));
+        if !self.auto_skip {
+            self.stop();
+            return;
+        }
         let has_next = {
             let mut q = self.queue.write();
             q.current_id() == Some(l.id) && q.skip_next().is_some()
@@ -663,6 +740,38 @@ impl Controller {
         } else {
             self.stop();
         }
+    }
+
+    /// Becomes a copy of a jam host's queue, carrying on with the song already playing if the
+    /// host is on it too.
+    fn mirror(&mut self, m: Mirror) {
+        let playing = self
+            .loading
+            .map(|l| l.id)
+            .or_else(|| self.engine.status().token.map(EntryId));
+        let keep = m.current.is_some() && m.current == playing && {
+            let q = self.queue.read();
+            let mine = m.current.and_then(|id| q.get(id));
+            let theirs = m.entries.iter().find(|e| Some(e.id) == m.current);
+            mine.zip(theirs)
+                .is_some_and(|(a, b)| a.track.locator == b.track.locator)
+        };
+        self.queue.write().mirror(m.entries, m.current, m.repeat);
+        if m.current.is_none() {
+            return self.stop();
+        }
+        if !keep {
+            return self.load_current_at(!m.playing, m.position);
+        }
+        match &mut self.loading {
+            Some(l) => l.paused = !m.playing,
+            None => self.refresh_preload(),
+        }
+        self.engine.send(if m.playing {
+            Command::Play
+        } else {
+            Command::Pause
+        });
     }
 
     /// Makes sure the engine's gapless follow-up matches what the queue says comes next.
@@ -692,6 +801,7 @@ impl Controller {
             id: next.id,
             track: next.track,
             purpose: Purpose::Preload,
+            start_at: Duration::ZERO,
         });
     }
 }

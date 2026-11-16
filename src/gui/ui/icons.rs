@@ -56,6 +56,8 @@ pub enum Icon {
     Verified,
     /// Three dots in a row (more options).
     More,
+    /// Two people: listening together.
+    Jam,
 }
 
 struct Pen<'a> {
@@ -340,6 +342,13 @@ pub fn draw(c: &mut Canvas, icon: Icon, r: Rect, color: Color) {
             p.color = Color::WHITE;
             p.w *= 1.15;
             p.poly(&[(7.5, 12.3), (10.8, 15.5), (16.5, 9.0)]);
+        }
+        Icon::Jam => {
+            // Someone behind, someone in front.
+            p.ring(16.5, 7.5, 3.0);
+            p.arc(16.5, 18.0, 5.6, PI + 0.55, TAU - 0.15);
+            p.ring(9.0, 9.5, 3.5);
+            p.arc(9.0, 21.5, 7.0, PI + 0.25, TAU - 0.25);
         }
         Icon::More => {
             for x in [5.5, 12.0, 18.5] {

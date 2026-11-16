@@ -25,6 +25,7 @@ pub struct Config {
     pub spotify: SpotifyConfig,
     pub lastfm: LastfmConfig,
     pub discord: DiscordConfig,
+    pub jam: JamConfig,
     pub playback: PlaybackConfig,
     pub lyrics: LyricsConfig,
     pub visualizer: VisualizerConfig,
@@ -158,6 +159,29 @@ impl Default for SpotifyConfig {
         Self {
             client_id: String::new(),
             bitrate: 320,
+        }
+    }
+}
+
+/// Jams (listening together).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct JamConfig {
+    /// Your name in jams (empty: your computer account's name).
+    pub name: String,
+    /// Where a jam you host listens (the next free port if taken).
+    pub port: u16,
+    /// The network address a jam you host listens on: "0.0.0.0" is every network, "127.0.0.1"
+    /// only this computer, or one interface's address (a VPN's, say).
+    pub bind: String,
+}
+
+impl Default for JamConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            port: 47470,
+            bind: "0.0.0.0".into(),
         }
     }
 }

@@ -2,7 +2,7 @@
 
 Khoostic is a music player written in Rust: one crate, one binary (`khoostic`). The Vulkan-rendered
 GUI is the main interface; `--tui` gives a vim-style terminal UI over the same player core. Local
-files, Spotify (librespot), Last.fm and Discord status today; listen-along jams,
+files, Spotify (librespot), Last.fm, Discord status and listen-along jams today;
 Navidrome/Subsonic and MPD are planned.
 
 ## Layout
@@ -24,8 +24,9 @@ only uses the ones listed above it here (keep it that way; no cycles back up).
 | `lastfm/` | Signed API client, browser sign-in, scrobble rules (`tracker.rs`, pure), background scrobbler with a persisted offline queue, similar tracks |
 | `discovery.rs` | Song radio (Spotify radio + Last.fm similar, matched to local files first, library-only fallback) and the autoplay watcher |
 | `lyrics.rs` | Lyrics providers in configured order: local `.lrc` / tags, Spotify (also for matched local songs), LRCLIB |
+| `jam/` | Jams: the host streams its queue window and position to guests over direct TCP (`wire.rs`: newline JSON, invites `address:port/secret`), applies their requests (`host.rs`); a guest mirrors the host (`PlayerCommand::Mirror`, the host's entry ids), keeps time with a synced clock, and routes its own shared commands to the host (`PlayerHandle::set_route`; `guest.rs`); each peer plays its own copy of each song |
 | `services.rs` | `Services::start`: library, Spotify, Last.fm, player and discovery wired together; `Launch` (paths from the command line) |
-| `gui/` | `window.rs` event loop + frame pacing + the borderless window (resize edges, drag), `headless.rs` offscreen; `app.rs` state + frame layout (title bar with window buttons, Your Library panel, page, queue panel, player bar: `top_bar.rs`, `sidebar.rs`, `queue_panel.rs`, `player_bar.rs`), `menu.rs` (song and library menus), `spotify.rs` (online data: Spotify, lyrics, genres), `state.rs` (panel state saved to `gui-state.json`); `views/` one file per page (+ `lists.rs` track rows, `grid.rs` cover tiles, `page.rs` whole-page scrolling, cards, two-line song rows, `viz_settings.rs` the visualizer section of Settings); `ui/` widgets, `anim.rs`, `icons.rs`, `text_field.rs`, `themes.rs` (built-in themes: Khoostic, Pink, Catppuccin); `render/` canvas, SDF painter (boxes, triangles, lines, arcs), images, glyphon text, `wipe.rs` (the theme-change swipe over a snapshot of the old frame), `swarm.rs` + `shaders/swarm.wgsl` (the 3D visualizer: compute-simulated cubes, drawn offscreen with MSAA and shown as the `ImageId::SCENE` image), wgpu (Vulkan only) |
+| `gui/` | `window.rs` event loop + frame pacing + the borderless window (resize edges, drag), `headless.rs` offscreen; `app.rs` state + frame layout (title bar with window buttons, Your Library panel, page, queue panel, player bar: `top_bar.rs`, `sidebar.rs`, `queue_panel.rs`, `player_bar.rs`), `menu.rs` (song and library menus), `spotify.rs` (online data: Spotify, lyrics, genres), `state.rs` (panel state saved to `gui-state.json`); `views/` one file per page (+ `lists.rs` track rows, `grid.rs` cover tiles, `page.rs` whole-page scrolling, cards, two-line song rows, `viz_settings.rs` the visualizer section of Settings, `jam.rs` the Jam page); `ui/` widgets, `anim.rs`, `icons.rs`, `text_field.rs`, `themes.rs` (built-in themes: Khoostic, Pink, Catppuccin); `render/` canvas, SDF painter (boxes, triangles, lines, arcs), images, glyphon text, `wipe.rs` (the theme-change swipe over a snapshot of the old frame), `swarm.rs` + `shaders/swarm.wgsl` (the 3D visualizer: compute-simulated cubes, drawn offscreen with MSAA and shown as the `ImageId::SCENE` image), wgpu (Vulkan only) |
 | `tui/` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
 | `main.rs` | CLI: `khoostic [paths] [--tui] [--play] [--shuffle]`, `devices`, `config`, `spotify`/`lastfm` `login/logout/status`; `build.rs` embeds the Windows manifest that keeps a console window from opening with the GUI (Windows 11 24H2+; `main` closes it on older Windows) |
 
@@ -50,6 +51,7 @@ Real-hardware checks (examples):
 ```sh
 cargo run --example audio_smoke  -- <short.wav> <short2.wav> <long track>
 cargo run --example tui_headless -- <music dir>   # scripted keys, prints screens
+cargo run --example jam_smoke    -- <music dir>   # two players in a jam over localhost: sync, controls
 cargo run --example gui_screens  -- <music dir> <out dir>   # PNG screenshots
 cargo run --example gui_shapes   -- <out.png>     # renderer test card
 cargo run --example library_scan -- <music dir> <scratch dir>
