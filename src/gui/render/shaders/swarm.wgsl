@@ -11,13 +11,13 @@
 
 const BARS: u32 = 64u;
 /// Cubes that fly (the rest are wall cubes).
-const SWARM: u32 = 27648u;
+const SWARM: u32 = 49152u;
 /// The last cubes of the swarm are the big "splash" ones.
-const SPARKS: u32 = 3072u;
+const SPARKS: u32 = 4096u;
 const WALL_ROWS: u32 = 32u;
 const WALL_COLS: u32 = 32u;
 /// Each bar is two cubes wide and this many high.
-const BAR_ROWS: u32 = 216u;
+const BAR_ROWS: u32 = 384u;
 /// No cube ever gets closer to the camera than this (world units).
 const NEAR: f32 = 1.9;
 
@@ -262,8 +262,8 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     let twist = lag * 1.3 + u.motion2.x;
     let wide = n1 * cos(twist) + n2 * sin(twist);
     let thin = cross(tangent, wide);
-    let across = (seed.y * 2.0 - 1.0) * (0.08 + 0.08 * lag);
-    let through = (seed.z * 2.0 - 1.0) * (0.015 + 0.02 * lag);
+    let across = (seed.y * 2.0 - 1.0) * (0.12 + 0.12 * lag);
+    let through = (seed.z * 2.0 - 1.0) * (0.02 + 0.03 * lag);
     let puff = (1.0 + bass * 0.3 + beat * 0.25) * select(1.0, 1.4, spark);
     let target_pos = here + (wide * across + thin * through) * puff;
 
@@ -274,23 +274,23 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     let blast = safe_normalize(flatten(p - here, tangent) + (seed - 0.5) * 0.3);
     // Pulled along to its place in the wave (the splashes loosely). Right after a hit the hold
     // goes slack, so the blast carries before the wave reels it back in.
-    let slack = 1.0 - 0.45 * impact;
-    v += (target_pos - p) * select(11.0, 6.0, spark) * slack * dt;
+    let slack = 1.0 - 0.6 * impact;
+    v += (target_pos - p) * select(10.0, 4.5, spark) * slack * dt;
     v *= 1.0 - min(dt * select(4.5, 2.2, spark) * (1.0 - 0.6 * impact), 1.0);
     // A beat hits: every cube gets a burst of speed at once, out from the spine and forward
     // along the wave, harder the louder the bass and this cube's band.
     if kick > 0.5 {
-        let force = (0.45 + 0.85 * seed.y) * (0.6 + bass + 0.6 * mine) * select(1.0, 1.6, spark);
+        let force = (0.6 + 1.2 * seed.y) * (0.6 + bass + 0.6 * mine) * select(1.0, 1.6, spark);
         v += blast * force + tangent * (1.2 + bass * 1.5);
     }
     // Sudden bass (not just loud bass) keeps blowing the ribbon outward.
-    v += blast * punch * select(4.0, 7.0, spark) * dt;
+    v += blast * punch * select(6.0, 10.0, spark) * dt;
     // Sudden mids whip the cubes around the spine.
     let mid_punch = u.motion2.y;
-    v += (cross(tangent, blast) * 8.0 + blast * 1.0) * mid_punch * select(1.0, 1.5, spark) * dt;
+    v += (cross(tangent, blast) * 9.0 + blast * 2.0) * mid_punch * select(1.0, 1.5, spark) * dt;
     // Sand blowing about in the wave; harder when this cube's band is loud.
     let flow = curl(p * 0.9 + seed * 0.2, t * (0.6 + mid * 0.8));
-    v += flow * (0.05 + 0.22 * mine + 0.1 * treble) * select(3.0, 4.0, spark) * dt;
+    v += flow * (0.06 + 0.3 * mine + 0.15 * treble) * select(3.0, 5.0, spark) * dt;
     p += v * dt;
     // A safety net only: never closer to the camera than NEAR.
     let from_cam = p - u.cam.xyz;

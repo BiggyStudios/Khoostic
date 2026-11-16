@@ -1,11 +1,11 @@
-//! The 3D visualizer's GPU side: a compute pass moves ~30k cubes, a render pass draws them
+//! The 3D visualizer's GPU side: a compute pass moves ~50k cubes, a render pass draws them
 //! (4x MSAA, depth) into an offscreen texture, and the UI shows that texture like any image
 //! ([`ImageId::SCENE`]), so clipping, rounded corners and fades work as usual.
 
 use crate::gui::render::Color;
 use crate::gui::render::images::{ImageId, ImageStore};
 
-const SWARM: u32 = 27648;
+const SWARM: u32 = 49152;
 const WALLS: u32 = 2 * 32 * 32;
 const CUBES: u32 = SWARM + WALLS;
 const SAMPLES: u32 = 4;
