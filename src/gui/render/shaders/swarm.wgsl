@@ -45,6 +45,7 @@ const T_BAND_GLOW: u32 = 33u;
 const T_BACKDROP_GLOW: u32 = 35u;
 const T_WALL_BULGE: u32 = 37u;
 const T_BAR_GAP: u32 = 38u;
+const T_SPECTRUM_PUSH: u32 = 42u;
 
 struct Scene {
     view_proj: mat4x4<f32>,
@@ -68,10 +69,16 @@ struct Scene {
     // beat lands; z: how recently one landed (1, fading); w: bass punch (sudden rises)
     motion: vec4<f32>,
     // x: how far the ribbon has spun (mostly the mids); y: mid punch (sudden rises); z: how
-    // full the music is overall (smoothed, 0..1)
+    // full the music is overall (smoothed, 0..1); w: a hit from a sudden sound anywhere in
+    // the spectrum this frame (its strength; 0 if none)
     motion2: vec4<f32>,
     // the tuning knobs (config `[visualizer.tuning]`), read through `tune(T_...)`
     tune: array<vec4<f32>, 11>,
+    // per band: 1 on a sharp rise for that band's own level, fading (vocals, hats, ...)
+    flares: array<vec4<f32>, 16>,
+    // x: 1 with no bass, down to 0.3 with a strong bass (how much the rest of the spectrum
+    // leads)
+    spectral: vec4<f32>,
 };
 
 struct Cube {
@@ -93,6 +100,11 @@ fn band(i: u32) -> f32 {
 
 fn tune(i: u32) -> f32 {
     return u.tune[i / 4u][i % 4u];
+}
+
+fn flare(i: u32) -> f32 {
+    let b = min(i, BARS - 1u);
+    return u.flares[b / 4u][b % 4u];
 }
 
 fn hash(n: u32) -> f32 {
@@ -321,6 +333,17 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     // Sudden mids whip the cubes around the spine.
     let mid_punch = u.motion2.y;
     v += (cross(tangent, blast) * 9.0 + blast * 2.0) * mid_punch * select(1.0, 1.5, spark) * tune(T_MID_WHIP) * dt;
+    // Every cube belongs to a frequency band: when that band flares (a syllable, a hi-hat, a
+    // synth stab) its cubes get thrown out and spun around the spine, bass or no bass.
+    let my_flare = flare(i % BARS);
+    v += (blast * select(3.5, 6.0, spark) + cross(tangent, blast) * 2.5)
+        * my_flare * tune(T_SPECTRUM_PUSH) * u.spectral.x * dt;
+    // A sudden sound anywhere in the spectrum hits like a softer beat.
+    let onset = u.motion2.w;
+    if onset > 0.0 {
+        let force = (0.3 + 0.6 * seed.y) * (0.5 + 1.5 * my_flare) * select(1.0, 1.4, spark);
+        v += (blast * force + tangent * 0.8) * onset;
+    }
     // Sand blowing about in the wave; harder when this cube's band is loud.
     let flow = curl(p * 0.9 + seed * 0.2, t * (0.6 + mid * 0.8));
     v += flow * (0.06 + 0.3 * mine + 0.15 * treble) * select(3.0, 5.0, spark) * tune(T_DRIFT) * dt;
@@ -421,6 +444,7 @@ fn vs_cube(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> V
     let storm = select(spectrum(seed.x * 0.38), spectrum(0.78 + seed.x * 0.22), spark);
     out.color = mix(bar_color, storm, loose);
     out.glow = mix(0.9, 0.02 + mine * mine * mine * select(0.45, 0.7, spark) * tune(T_BAND_GLOW)
+        + flare(b) * 0.5 * tune(T_BAND_GLOW)
         + u.motion.z * 0.25 * tune(T_FLASH), loose);
     out.metal = 1.0;
     if wall_cube {

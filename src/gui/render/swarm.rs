@@ -39,6 +39,13 @@ pub struct SwarmFrame {
     pub mid_punch: f32,
     /// How full the music is overall (smoothed, 0..1).
     pub fullness: f32,
+    /// Per band: 1 on a sharp rise for that band's own level, fading.
+    pub flares: [f32; 64],
+    /// Strength of a hit from a sudden sound anywhere in the spectrum (0 if none this frame).
+    pub onset: f32,
+    /// 1 with no bass, down to 0.3 with a strong bass: how much the rest of the spectrum
+    /// leads.
+    pub bassless: f32,
     /// The user's knobs (`[visualizer.tuning]`).
     pub tuning: VisualizerTuning,
     pub dt: f32,
@@ -87,6 +94,8 @@ struct Uniforms {
     motion: [f32; 4],
     motion2: [f32; 4],
     tune: [[f32; 4]; 11],
+    flares: [[f32; 4]; 16],
+    spectral: [f32; 4],
 }
 
 struct Targets {
@@ -323,6 +332,7 @@ impl Swarm {
                 f.walls * f.tuning.walls,
                 f.tuning.fog * f.depth,
             ],
+            spectral: [f.bassless, 0.0, 0.0, 0.0],
             bars: f.bars,
             spectrum: f.spectrum.map(lin),
             accent: lin(f.accent),
@@ -330,8 +340,9 @@ impl Swarm {
             fg: lin(f.fg),
             bands,
             motion: [f.tau, f.kick as u8 as f32, f.impact, f.punch],
-            motion2: [f.spin, f.mid_punch, f.fullness, 0.0],
+            motion2: [f.spin, f.mid_punch, f.fullness, f.onset],
             tune: f.tuning.to_gpu(),
+            flares: pack(&f.flares),
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         self.pending = true;
@@ -408,6 +419,15 @@ fn camera(f: &SwarmFrame) -> ([f32; 3], [f32; 3], f32) {
     ];
     let look = [0.0, lerp(0.0, -0.05, d), 0.0];
     (eye, look, lerp(flat_fov, k.fov.to_radians(), d))
+}
+
+/// 64 values as 16 vec4s.
+fn pack(v: &[f32; 64]) -> [[f32; 4]; 16] {
+    let mut out = [[0.0; 4]; 16];
+    for (i, x) in v.iter().enumerate() {
+        out[i / 4][i % 4] = x.clamp(0.0, 1.0);
+    }
+    out
 }
 
 fn smooth(x: f32) -> f32 {
@@ -494,6 +514,9 @@ mod tests {
             spin: 0.0,
             mid_punch: 0.0,
             fullness: 0.0,
+            flares: [0.0; 64],
+            onset: 0.0,
+            bassless: 1.0,
             tuning: VisualizerTuning::default(),
             dt: 0.016,
             mode: Mode::Bars,

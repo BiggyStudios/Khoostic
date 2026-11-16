@@ -31,6 +31,8 @@ pub(crate) struct Viz3d {
     spin: f32,
     slow_mid: f32,
     fullness: f32,
+    /// Every band against its own recent range: flares and sudden-sound hits.
+    spectrum: SpectrumTracker,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -188,15 +190,28 @@ impl Gui {
         let mid_punch = ((a.mid - v.slow_mid) * 4.0).clamp(0.0, 1.0);
         let level = (a.bass + a.mid + a.treble) / 3.0;
         v.fullness += (level - v.fullness) * (1.0 - (-dt * 1.5).exp());
+        // The whole spectrum: per-band flares, onsets from any sudden sound (softer hits than
+        // a beat), and how busy the music is relative to itself.
+        let (activity, onset) = v.spectrum.update(a, dt);
+        // These fill in where the bass is missing; with a strong bass, the bass leads.
+        let bassless = 1.0 - 0.7 * v.slow_bass.clamp(0.0, 1.0);
+        let onset = onset.map_or(0.0, |s| s * k.onset_kick * bassless);
+        if onset > 0.0 {
+            v.impact = v.impact.max((0.4 * onset).min(1.0));
+        }
         // Spins with the mids (and a little treble), always a little.
-        v.spin += dt * (k.spin + k.mid_spin * a.mid + 1.2 * a.treble + 4.0 * mid_punch);
+        v.spin += dt
+            * (k.spin
+                + k.mid_spin * a.mid
+                + 1.2 * a.treble
+                + 4.0 * mid_punch
+                + k.activity_speed * activity);
         // Swings faster with the whole mix and lunges on every hit.
-        v.tau += dt
-            * (k.speed
-                + k.bass_speed * a.bass
-                + k.mid_speed * a.mid
-                + k.treble_speed * a.treble
-                + k.lunge * v.impact * v.impact);
+        // Whichever asks for more: the levels (bass, mids, treble), or how busy the music is
+        // for itself, which keeps quiet parts (a vocal over a sparse beat) moving too.
+        let levels = k.bass_speed * a.bass + k.mid_speed * a.mid + k.treble_speed * a.treble;
+        let busy = k.activity_speed * 2.0 * activity;
+        v.tau += dt * (k.speed + levels.max(busy) + k.lunge * v.impact * v.impact);
         let (mode, phase, depth, walls) = stage;
         SwarmFrame {
             size: (0, 0),
@@ -210,6 +225,9 @@ impl Gui {
             spin: v.spin,
             mid_punch,
             fullness: v.fullness,
+            bassless,
+            flares: v.spectrum.flare,
+            onset,
             tuning: k,
             dt,
             mode,
@@ -231,5 +249,143 @@ impl Gui {
             surface: t.surface,
             fg: t.fg,
         }
+    }
+}
+
+/// Follows every frequency band against its own recent range, so a band "flares" when it
+/// rises sharply for *its* level: a syllable lights up the vocal bands, a hi-hat the top ones,
+/// even when the bass is quiet. Rises across the whole spectrum together are an onset (a hit
+/// from any sudden sound), and the average of the relative levels says how busy the music is,
+/// whatever its loudness.
+pub(crate) struct SpectrumTracker {
+    avg: [f32; BANDS],
+    high: [f32; BANDS],
+    /// Relative level last time (0..1 within the band's own range).
+    rel: [f32; BANDS],
+    /// Per band, 1 on a sharp rise, fading.
+    pub flare: [f32; BANDS],
+    flux_avg: f32,
+    since_onset: f32,
+    seq: u64,
+}
+
+impl Default for SpectrumTracker {
+    fn default() -> Self {
+        Self {
+            avg: [0.0; BANDS],
+            high: [0.0; BANDS],
+            rel: [0.0; BANDS],
+            flare: [0.0; BANDS],
+            flux_avg: 0.0,
+            since_onset: 1.0,
+            seq: u64::MAX,
+        }
+    }
+}
+
+impl SpectrumTracker {
+    /// One frame on: returns how busy the music is (0..1) and, on an onset, how strong
+    /// (0.3..1).
+    pub(crate) fn update(&mut self, a: &AnalysisFrame, dt: f32) -> (f32, Option<f32>) {
+        let dt = dt.clamp(0.0, 0.1);
+        let fade = (-dt * 7.0).exp();
+        for f in &mut self.flare {
+            *f *= fade;
+        }
+        self.since_onset += dt;
+        let mut onset = None;
+        // Only new analysis frames carry news (the GUI can draw faster than they come).
+        if a.seq != self.seq {
+            self.seq = a.seq;
+            let ease = 1.0 - (-dt * 0.8).exp();
+            let mut flux = 0.0;
+            for i in 0..BANDS {
+                let v = a.bands[i].clamp(0.0, 1.0);
+                self.avg[i] += (v - self.avg[i]) * ease;
+                self.high[i] = v
+                    .max(self.high[i] - 0.25 * dt)
+                    .max(self.avg[i] + 0.1)
+                    .max(0.08);
+                let floor = self.avg[i] * 0.7;
+                let rel = ((v - floor) / (self.high[i] - floor)).clamp(0.0, 1.0);
+                let rise = (rel - self.rel[i]).max(0.0);
+                self.rel[i] = rel;
+                self.flare[i] = self.flare[i].max((rise * 3.0).min(1.0));
+                flux += rise;
+            }
+            flux /= BANDS as f32;
+            if flux > self.flux_avg * 1.8 + 0.015 && self.since_onset > 0.2 {
+                onset = Some(((flux - self.flux_avg) * 15.0).clamp(0.3, 1.0));
+                self.since_onset = 0.0;
+            }
+            self.flux_avg += (flux - self.flux_avg) * (1.0 - (-dt * 2.0).exp());
+        }
+        let activity = self.rel.iter().sum::<f32>() / BANDS as f32;
+        (activity, onset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(seq: u64, f: impl Fn(usize) -> f32) -> AnalysisFrame {
+        let mut a = AnalysisFrame {
+            seq,
+            ..Default::default()
+        };
+        for i in 0..BANDS {
+            a.bands[i] = f(i);
+        }
+        a
+    }
+
+    #[test]
+    fn vocals_flare_their_own_bands_without_any_bass() {
+        let mut s = SpectrumTracker::default();
+        let mut seq = 0;
+        // A steady loud bass and nothing else: settles, no more onsets.
+        let bass = |i: usize| if i < 12 { 0.9 } else { 0.0 };
+        let mut late_onsets = 0;
+        for k in 0..400 {
+            seq += 1;
+            let (_, onset) = s.update(&frame(seq, bass), 1.0 / 100.0);
+            if k > 200 && onset.is_some() {
+                late_onsets += 1;
+            }
+        }
+        assert_eq!(late_onsets, 0, "steady bass keeps hitting");
+        // Quiet vocals come in (mid bands, much quieter than the bass): they flare, the high
+        // bands and the bass don't, and it counts as a hit.
+        let vocals = |i: usize| match i {
+            0..12 => 0.9,
+            24..40 => 0.35,
+            _ => 0.0,
+        };
+        let mut hit = false;
+        for _ in 0..3 {
+            seq += 1;
+            hit |= s.update(&frame(seq, vocals), 1.0 / 100.0).1.is_some();
+        }
+        assert!(hit, "the vocals coming in is an onset");
+        assert!(s.flare[30] > 0.5, "vocal band flare {}", s.flare[30]);
+        assert!(s.flare[5] < 0.1 && s.flare[55] < 0.1);
+        // Flares fade once the vocal holds steady.
+        for _ in 0..50 {
+            seq += 1;
+            s.update(&frame(seq, vocals), 1.0 / 100.0);
+        }
+        assert!(s.flare[30] < 0.1);
+    }
+
+    #[test]
+    fn repeated_frames_change_nothing() {
+        let mut s = SpectrumTracker::default();
+        let a = frame(1, |i| if i == 30 { 0.6 } else { 0.0 });
+        s.update(&a, 0.01);
+        let before = s.flare[30];
+        // Same analysis frame again (the GUI drew twice): no new rise.
+        s.update(&a, 0.0);
+        assert_eq!(s.flare[30], before);
     }
 }
