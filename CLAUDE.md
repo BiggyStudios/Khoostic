@@ -15,7 +15,7 @@ only uses the ones listed above it here (keep it that way; no cycles back up).
 | `model/` | `Track`, `TrackLocator` (+ URI form), `CoverRef`, `Queue`, `Lyrics` (+ LRC parsing), song matching and `normalize`, natural sort. **No I/O.** |
 | `pending.rs` | `Pending<T>`: a background result the UIs poll once per frame |
 | `config.rs` | `config.toml` model; every field defaults, unknown keys are errors; `save_value` edits one key in place, `save_table` replaces a table; `config/visualizer.rs` declares every visualizer knob once (struct, defaults, Settings rows, GPU order) plus built-in presets |
-| `audio/` | `AudioSource` trait, symphonia decoding, `Conditioner` (stereo + rubato), engine thread, cpal output, FFT analysis feed |
+| `audio/` | `AudioSource` trait, symphonia decoding, `Conditioner` (stereo + rubato), engine thread, cpal output, FFT analysis feed, `beat.rs` beat tracker (onset strength → tempo by autocorrelation → predicted beats confirmed by onsets; accents, ghost beats through quiet parts) |
 | `player/` | `Player` controller (queue ↔ engine, gapless preload), `open.rs` (songs open on their own thread: newest pick wins; network songs aren't fetched while the user skips past them and follow-ups only after a while, because Spotify allows only a few decryption keys in a row per account and then refuses for ~20 s; its "wait" is waited out and shown, not reported), `SourceResolver`s, file browser model |
 | `library/` | lofty tags, cover cache (content-hashed thumbnails), SQLite + FTS5 index, incremental scan, playlists, liked local songs |
 | `spotify/` | Browser sign-in (OAuth PKCE, cancellable local listener), library, search and lyrics over Spotify's client API (spclient, `api.rs`), artist pages (`artist.rs`), liked songs and followed artists (`collection.rs`), librespot streaming as an `AudioSource`, `SpotifyResolver` |
@@ -52,6 +52,7 @@ Real-hardware checks (examples):
 cargo run --example audio_smoke  -- <short.wav> <short2.wav> <long track>
 cargo run --example tui_headless -- <music dir>   # scripted keys, prints screens
 cargo run --example jam_smoke    -- <music dir>   # two players in a jam over localhost: sync, controls
+cargo run --release --example beats -- <files...>  # beat tracking over songs: tempo, steadiness
 cargo run --example gui_screens  -- <music dir> <out dir>   # PNG screenshots
 cargo run --example gui_shapes   -- <out.png>     # renderer test card
 cargo run --example library_scan -- <music dir> <scratch dir>

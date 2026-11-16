@@ -177,13 +177,22 @@ impl Gui {
         ui.anim.keep_alive();
         let v = &mut self.viz3d;
         v.time += dt;
-        let kick = a.beat_count != v.beats;
-        v.beats = a.beat_count;
-        v.impact = if kick {
-            1.0
+        // Beats come from the analyzer's beat tracker: on the tempo, as hard as the beat is
+        // (accents, where several things land at once, hit harder; a soft "ghost" keeps the
+        // pulse through quiet parts). Nothing between beats hits.
+        let kick = if a.beat_count != v.beats {
+            a.beat_strength.clamp(0.0, 1.25)
         } else {
-            v.impact * (-dt * k.recover).exp()
+            0.0
         };
+        v.beats = a.beat_count;
+        // At any tempo a hit settles before the next beat, so every beat lands on its own.
+        let tempo = if a.bpm > 0.0 {
+            (a.bpm / 120.0).clamp(0.6, 1.7)
+        } else {
+            1.0
+        };
+        v.impact = (v.impact * (-dt * k.recover * tempo).exp()).max(kick);
         v.slow_bass += (a.bass - v.slow_bass) * (1.0 - (-dt * 2.5).exp());
         let punch = ((a.bass - v.slow_bass) * 3.0).clamp(0.0, 1.0);
         v.slow_mid += (a.mid - v.slow_mid) * (1.0 - (-dt * 3.0).exp());
@@ -204,14 +213,15 @@ impl Gui {
             * (k.spin
                 + k.mid_spin * a.mid
                 + 1.2 * a.treble
-                + 4.0 * mid_punch
+                + 1.5 * mid_punch
                 + k.activity_speed * activity);
         // Swings faster with the whole mix and lunges on every hit.
         // Whichever asks for more: the levels (bass, mids, treble), or how busy the music is
         // for itself, which keeps quiet parts (a vocal over a sparse beat) moving too.
         let levels = k.bass_speed * a.bass + k.mid_speed * a.mid + k.treble_speed * a.treble;
         let busy = k.activity_speed * 2.0 * activity;
-        v.tau += dt * (k.speed + levels.max(busy) + k.lunge * v.impact * v.impact);
+        // The base flow keeps time with the song too.
+        v.tau += dt * (k.speed * tempo + levels.max(busy) + k.lunge * v.impact * v.impact);
         let (mode, phase, depth, walls) = stage;
         SwarmFrame {
             size: (0, 0),

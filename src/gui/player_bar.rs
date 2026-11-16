@@ -593,7 +593,8 @@ impl CoverRing {
         }
         if a.beat_count != self.beats {
             self.beats = a.beat_count;
-            self.pulse = 1.0;
+            // As hard as the beat: accents swell more, ghost beats barely.
+            self.pulse = (a.beat_strength / 0.75).clamp(0.3, 1.3);
         }
         self.pulse *= 1.0 - ease(5.0);
         self.spin = (self.spin + dt / 40.0).fract();

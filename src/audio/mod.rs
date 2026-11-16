@@ -8,6 +8,7 @@
 //! ```
 
 pub mod analysis;
+pub mod beat;
 pub mod condition;
 pub mod decode;
 pub mod engine;

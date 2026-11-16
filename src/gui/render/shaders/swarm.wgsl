@@ -323,10 +323,12 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     v += (target_pos - p) * select(1.0, 0.45, spark) * hold * slack * dt;
     v *= 1.0 - min(dt * select(4.5, 2.2, spark) * sqrt(hold / 10.0) * slack, 1.0);
     // A beat hits: every cube gets a burst of speed at once, out from the spine and forward
-    // along the wave, harder the louder the bass and this cube's band.
-    if kick > 0.5 {
+    // along the wave, as hard as the beat (an ordinary one is 0.7), the bass and this cube's
+    // band.
+    if kick > 0.0 {
+        let hit = kick / 0.7;
         let force = (0.6 + 1.2 * seed.y) * (0.6 + bass + 0.6 * mine) * select(1.0, 1.6, spark);
-        v += (blast * force + tangent * (1.2 + bass * 1.5)) * tune(T_BURST);
+        v += (blast * force + tangent * (1.2 + bass * 1.5)) * tune(T_BURST) * hit;
     }
     // Sudden bass (not just loud bass) keeps blowing the ribbon outward.
     v += blast * punch * select(6.0, 10.0, spark) * tune(T_BASS_PUNCH) * dt;

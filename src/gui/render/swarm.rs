@@ -28,7 +28,8 @@ pub struct SwarmFrame {
     /// Music time: runs faster when the music is loud; moves the wave along its path.
     pub tau: f32,
     /// True on the frame a beat lands (one burst per beat, however fast frames come).
-    pub kick: bool,
+    /// A beat this frame: its strength (0 when none).
+    pub kick: f32,
     /// How recently a beat landed: 1 then, fading over about half a second.
     pub impact: f32,
     /// Sudden rises in the bass (0..1).
@@ -339,7 +340,7 @@ impl Swarm {
             surface: lin(f.surface),
             fg: lin(f.fg),
             bands,
-            motion: [f.tau, f.kick as u8 as f32, f.impact, f.punch],
+            motion: [f.tau, f.kick, f.impact, f.punch],
             motion2: [f.spin, f.mid_punch, f.fullness, f.onset],
             tune: f.tuning.to_gpu(),
             flares: pack(&f.flares),
@@ -508,7 +509,7 @@ mod tests {
             bars: [0.0, 0.0, 1200.0, 600.0],
             time: 3.0,
             tau: 3.0,
-            kick: false,
+            kick: 0.0,
             impact: 0.0,
             punch: 0.0,
             spin: 0.0,

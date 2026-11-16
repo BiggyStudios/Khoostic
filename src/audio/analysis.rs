@@ -14,6 +14,8 @@ use arc_swap::ArcSwap;
 use realfft::RealFftPlanner;
 use realfft::num_complex::Complex;
 
+use super::beat::BeatTracker;
+
 pub const BANDS: usize = 64;
 pub const WAVEFORM_LEN: usize = 512;
 const FFT_SIZE: usize = 2048;
@@ -25,8 +27,6 @@ const FLOOR_DB: f32 = -60.0;
 const CEIL_DB: f32 = -8.0;
 /// Pink-noise style tilt so highs aren't permanently dwarfed by bass.
 const TILT_DB_PER_OCTAVE: f32 = 3.0;
-const BEAT_HISTORY: usize = 96;
-const BEAT_MIN_INTERVAL_SECS: f32 = 0.22;
 
 #[derive(Clone, Debug)]
 pub struct AnalysisFrame {
@@ -44,10 +44,18 @@ pub struct AnalysisFrame {
     pub bass: f32,
     pub mid: f32,
     pub treble: f32,
-    /// `1.0` on a detected beat, decaying towards `0` afterwards.
+    /// The latest beat's strength on a beat, decaying towards `0` afterwards.
     pub beat: f32,
-    /// Number of beats detected since the analyzer started; changes exactly once per beat.
+    /// Number of beats since the analyzer started; changes exactly once per beat (tracked
+    /// beats: on the tempo, not on every sudden sound; see [`super::beat`]).
     pub beat_count: u64,
+    /// How hard the latest beat hit: ~0.7 usually, up to ~1.25 for accents (several things
+    /// landing on it), ~0.25 for a "ghost" beat kept going through a quiet part.
+    pub beat_strength: f32,
+    /// The song's tempo, 0 while unknown.
+    pub bpm: f32,
+    /// How far into the current beat (0 at a beat, 1 at the next); 0 without a tempo.
+    pub beat_phase: f32,
 }
 
 impl Default for AnalysisFrame {
@@ -63,6 +71,9 @@ impl Default for AnalysisFrame {
             treble: 0.0,
             beat: 0.0,
             beat_count: 0,
+            beat_strength: 0.0,
+            bpm: 0.0,
+            beat_phase: 0.0,
         }
     }
 }
@@ -79,12 +90,10 @@ pub struct Analyzer {
     fft_scratch: Vec<Complex<f32>>,
     band_bins: [(usize, usize); BANDS],
     band_tilt: [f32; BANDS],
-    bass_bins: usize,
     frame: AnalysisFrame,
-    energy_history: [f32; BEAT_HISTORY],
-    energy_pos: usize,
-    hops_since_beat: u32,
-    beat_min_hops: u32,
+    beats: BeatTracker,
+    /// This hop's band levels before smoothing (what the beat tracker reads).
+    raw: [f32; BANDS],
 }
 
 impl Analyzer {
@@ -100,6 +109,7 @@ impl Analyzer {
 
         let mut band_bins = [(0, 0); BANDS];
         let mut band_tilt = [0.0; BANDS];
+        let mut centers = [0.0; BANDS];
         for (b, (bins, tilt)) in band_bins.iter_mut().zip(band_tilt.iter_mut()).enumerate() {
             let f0 = MIN_FREQ * (max_freq / MIN_FREQ).powf(b as f32 / BANDS as f32);
             let f1 = MIN_FREQ * (max_freq / MIN_FREQ).powf((b + 1) as f32 / BANDS as f32);
@@ -107,6 +117,7 @@ impl Analyzer {
             let hi = ((f1 / bin_hz).ceil() as usize).clamp(lo + 1, nbins);
             *bins = (lo, hi);
             let center = (f0 * f1).sqrt();
+            centers[b] = center;
             *tilt = TILT_DB_PER_OCTAVE * (center / 1000.0).log2();
         }
 
@@ -121,12 +132,9 @@ impl Analyzer {
             history_pos: 0,
             band_bins,
             band_tilt,
-            bass_bins: ((150.0 / bin_hz).ceil() as usize).max(2),
             frame: AnalysisFrame::default(),
-            energy_history: [0.0; BEAT_HISTORY],
-            energy_pos: 0,
-            hops_since_beat: u32::MAX,
-            beat_min_hops: (BEAT_MIN_INTERVAL_SECS * sample_rate as f32 / HOP as f32).ceil() as u32,
+            beats: BeatTracker::new(sample_rate as f32 / HOP as f32, &centers),
+            raw: [0.0; BANDS],
         }
     }
 
@@ -168,6 +176,7 @@ impl Analyzer {
             let peak = self.fft_out[lo..hi].iter().map(mag).fold(0.0, f32::max);
             let db = 20.0 * (peak + 1e-9).log10() + self.band_tilt[b];
             let target = ((db - FLOOR_DB) / (CEIL_DB - FLOOR_DB)).clamp(0.0, 1.0);
+            self.raw[b] = target;
             let cur = f.bands[b];
             // Fast attack, slow release: punchy but not flickery.
             let k = if target > cur { 0.65 } else { 0.18 };
@@ -183,33 +192,16 @@ impl Analyzer {
         f.mid = avg(&f.bands[third..2 * third]);
         f.treble = avg(&f.bands[2 * third..]);
 
-        // Beat detection: low-band energy against an adaptive threshold.
-        let energy: f32 = self.fft_out[1..self.bass_bins]
-            .iter()
-            .map(|c| mag(c).powi(2))
-            .sum();
-        let mean = self.energy_history.iter().sum::<f32>() / BEAT_HISTORY as f32;
-        let var = self
-            .energy_history
-            .iter()
-            .map(|e| (e - mean).powi(2))
-            .sum::<f32>()
-            / BEAT_HISTORY as f32;
-        let threshold = mean + 1.4 * var.sqrt();
-        self.energy_history[self.energy_pos] = energy;
-        self.energy_pos = (self.energy_pos + 1) % BEAT_HISTORY;
-
-        // Spacing is measured in hops (sample time), not wall time, so bursts of buffered
-        // audio analyzed faster than real time still detect beats correctly.
-        self.hops_since_beat = self.hops_since_beat.saturating_add(1);
-        let spaced = self.hops_since_beat >= self.beat_min_hops;
-        if energy > threshold && energy > 1e-4 && spaced {
-            f.beat = 1.0;
-            f.beat_count += 1;
-            self.hops_since_beat = 0;
-        } else {
-            f.beat = if f.beat < 1e-3 { 0.0 } else { f.beat * 0.88 };
+        match self.beats.push(&self.raw) {
+            Some(beat) => {
+                f.beat = beat.strength;
+                f.beat_strength = beat.strength;
+                f.beat_count += 1;
+            }
+            None => f.beat = if f.beat < 1e-3 { 0.0 } else { f.beat * 0.88 },
         }
+        f.bpm = self.beats.bpm().unwrap_or(0.0);
+        f.beat_phase = self.beats.phase();
 
         f.seq += 1;
         &self.frame

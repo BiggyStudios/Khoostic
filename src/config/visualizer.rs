@@ -159,8 +159,8 @@ knobs! {
     // Reacting to the whole spectrum (vocals, hats, synths), not just the bass. Last so the
     // GPU slots above don't move.
     activity_speed: Motion, 1.0, 0.0, 3.0, false, "Speed from everything", "Keeps the wave moving whenever anything is playing, even quiet parts";
-    spectrum_push: Impact, 1.0, 0.0, 3.0, false, "Spectrum push", "Each frequency pushing its own cubes: vocals, hats, synths";
-    onset_kick: Impact, 1.0, 0.0, 3.0, false, "Onset hits", "Hits from any sudden sound, not only the bass";
+    spectrum_push: Impact, 0.35, 0.0, 3.0, false, "Spectrum push", "Each frequency nudging its own cubes between beats: vocals, hats, synths";
+    onset_kick: Impact, 0.0, 0.0, 3.0, false, "Off-beat hits", "Sudden sounds between beats hit too (at 0 only the beat hits)";
 }
 
 impl VisualizerTuning {
@@ -218,8 +218,8 @@ pub fn builtin_presets() -> Vec<(&'static str, VisualizerTuning)> {
                 camera_punch: 0.15,
                 shake: 0.01,
                 bass_zoom: 0.1,
-                spectrum_push: 0.6,
-                onset_kick: 0.5,
+                spectrum_push: 0.15,
+                onset_kick: 0.0,
                 ..d
             },
         ),
@@ -242,8 +242,8 @@ pub fn builtin_presets() -> Vec<(&'static str, VisualizerTuning)> {
                 flash: 1.8,
                 camera_punch: 0.8,
                 shake: 0.12,
-                spectrum_push: 1.6,
-                onset_kick: 1.6,
+                spectrum_push: 0.8,
+                onset_kick: 0.5,
                 activity_speed: 1.5,
                 ..d
             },
