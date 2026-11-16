@@ -810,7 +810,7 @@ impl Gui {
 }
 
 /// How long a theme swipe takes to cross the window.
-const SWIPE: Duration = Duration::from_millis(850);
+const SWIPE: Duration = Duration::from_millis(950);
 
 impl Gui {
     /// Switches to the built-in theme `key` (keeping colors overridden in the config) with a

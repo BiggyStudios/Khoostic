@@ -23,13 +23,16 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let s = w.scale;
     let px = pos.xy;
-    // The edge sweeps left to right, leaning back at the top.
-    let dir = normalize(vec2<f32>(1.0, 0.38));
-    let span = dot(w.size, dir);
-    let wave = sin(px.y / (90.0 * s) + w.progress * 7.0) * 16.0 * s
-        + sin(px.y / (31.0 * s) - w.progress * 11.0) * 4.0 * s;
+    // The edge comes in at the top-right corner and sweeps down to the bottom-left.
+    let dir = normalize(vec2<f32>(-0.8, 1.0));
+    let first = dot(vec2<f32>(w.size.x, 0.0), dir);
+    let last = dot(vec2<f32>(0.0, w.size.y), dir);
+    // Ripples run along the edge.
+    let along = dot(px, vec2<f32>(dir.y, -dir.x));
+    let wave = sin(along / (90.0 * s) + w.progress * 7.0) * 16.0 * s
+        + sin(along / (31.0 * s) - w.progress * 11.0) * 4.0 * s;
     let margin = 160.0 * s;
-    let front = mix(-margin, span + margin, w.progress);
+    let front = mix(first - margin, last + margin, w.progress);
     // > 0: still the old theme; < 0: already the new one.
     let x = dot(px, dir) + wave - front;
 
