@@ -82,7 +82,7 @@ fn main() -> anyhow::Result<()> {
     let t = Instant::now();
     guest_jam.join(&format!("127.0.0.1:{port}/{secret}"))?;
     let joined = wait(
-        &|| (guest.snapshot().state == State::Playing && !guest.snapshot().loading),
+        &|| guest.snapshot().state == State::Playing && !guest.snapshot().loading,
         10,
     );
     check(
@@ -170,7 +170,7 @@ fn main() -> anyhow::Result<()> {
     );
     guest.send(Cmd::TogglePause);
     wait(
-        &|| (host.snapshot().state == State::Playing && !host.snapshot().loading),
+        &|| host.snapshot().state == State::Playing && !host.snapshot().loading,
         3,
     );
     std::thread::sleep(Duration::from_secs(4));
