@@ -87,6 +87,7 @@ fn main() -> anyhow::Result<()> {
                 device: cli.device,
                 volume: cli.volume,
             };
+            console::fit(cli.tui);
             let app = Services::start(&config, audio)?;
             let launch = app.launch(&cli.paths, cli.play, cli.shuffle)?;
             if cli.tui {
@@ -195,6 +196,40 @@ fn lastfm_account(config: &Config, action: Account) -> anyhow::Result<()> {
             Status::Failed(e) => anyhow::bail!(e),
         }
     }
+}
+
+/// The console window on Windows: the GUI shouldn't come with one, the TUI needs one. (The app
+/// manifest from build.rs already keeps Windows 11 24H2+ from opening one for the GUI.)
+mod console {
+    #[cfg(windows)]
+    pub fn fit(tui: bool) {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetConsoleWindow() -> *mut core::ffi::c_void;
+            fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+            fn AllocConsole() -> i32;
+            fn FreeConsole() -> i32;
+        }
+        // SAFETY: plain Win32 calls with valid arguments; no handles are kept across them.
+        unsafe {
+            let has_console = !GetConsoleWindow().is_null();
+            if tui {
+                if !has_console {
+                    AllocConsole();
+                }
+            } else if has_console {
+                // Only close a console that was opened just for us, not the terminal we were
+                // started from (that one has the shell attached too).
+                let mut ids = [0u32; 4];
+                if GetConsoleProcessList(ids.as_mut_ptr(), ids.len() as u32) == 1 {
+                    FreeConsole();
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn fit(_tui: bool) {}
 }
 
 /// Logs go to a file: anything on stderr would corrupt the TUI.
