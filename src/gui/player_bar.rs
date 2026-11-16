@@ -86,15 +86,21 @@ impl Gui {
         match &snap.current {
             Some(e) => {
                 let seed = e.track.album.as_deref().unwrap_or(&e.track.title);
-                let beat = ui.anim.to(anim::id("np-bass"), a.bass, 18.0);
-                ui.c.glow(art, t.gradient(0.5).alpha(0.08 + 0.3 * beat), 10.0, 12.0);
                 // The ring settles away when paused instead of freezing.
-                let ring = self.cover_visualizer && snap.state == PlaybackState::Playing;
-                let ring = ui
-                    .anim
-                    .to(anim::id("np-ring"), ring as u8 as f32, anim::NORMAL);
+                let playing = snap.state == PlaybackState::Playing;
+                let ring = ui.anim.to(
+                    anim::id("np-ring"),
+                    (self.cover_visualizer && playing) as u8 as f32,
+                    anim::NORMAL,
+                );
                 if ring > 0.01 {
-                    cover_ring(ui, art, a, ring);
+                    if playing {
+                        self.ring.update(a, ui.anim.dt());
+                    }
+                    self.ring.draw(ui, art, ring);
+                } else {
+                    let beat = ui.anim.to(anim::id("np-bass"), a.bass, 18.0);
+                    ui.c.glow(art, t.gradient(0.5).alpha(0.08 + 0.3 * beat), 10.0, 12.0);
                 }
                 ui.cover(art, e.track.cover.as_ref(), CoverSize::Large, 8.0, seed);
                 // Title → album, artist → artist, like Spotify (underlined on hover).
@@ -479,40 +485,133 @@ pub(crate) fn draw_slider(ui: &mut Ui, r: Rect, frac: f32, hot: f32, fill: Color
     }
 }
 
-/// Bars standing out from the cover's rounded edge, one per step around it, mirrored left to
-/// right: bass at the bottom, treble at the top. `amount` fades the whole ring in and out.
-fn cover_ring(ui: &mut Ui, art: Rect, a: &AnalysisFrame, amount: f32) {
-    const BARS: usize = 64;
-    /// The highest band shown; the top of the spectrum is nearly always quiet.
-    const TOP_BAND: f32 = 47.0;
-    const GAP: f32 = 3.0;
-    const MAX_LEN: f32 = 10.0;
-    let t = ui.theme.clone();
-    let (cx, cy) = art.center();
-    let half = art.w / 2.0 + GAP;
-    let radius = 8.0 + GAP;
-    let perimeter = edge_perimeter(half, radius);
-    for i in 0..BARS {
-        let u = i as f32 / BARS as f32;
-        // 0 at the bottom middle, 1 at the top middle, the same on both sides.
-        let d = (1.0 - 2.0 * u).abs();
-        let band = d * TOP_BAND;
-        let lo = band.floor() as usize;
-        let hi = (lo + 1).min(crate::audio::BANDS - 1);
-        let v = a.bands[lo] + (a.bands[hi] - a.bands[lo]) * band.fract();
-        let v = v.clamp(0.0, 1.0);
-        let ((x, y), (nx, ny)) = edge_point(half, radius, u * perimeter);
-        let len = 1.0 + MAX_LEN * v.powf(0.8) * amount;
-        let (x0, y0) = (cx + x, cy + y);
-        ui.c.line(
-            (x0, y0),
-            (x0 + nx * len, y0 + ny * len),
-            2.0,
-            t.gradient(d).alpha((0.3 + 0.7 * v) * amount),
-        );
+/// Bars around the cover. Interpolated between `BANDS`, and only up to `TOP_BAND`: the top
+/// of the spectrum is nearly always quiet.
+const RING_BARS: usize = 72;
+const TOP_BAND: f32 = 55.0;
+/// Space between the cover and the bars (more on a beat), and the longest bar.
+const RING_GAP: f32 = 3.0;
+const RING_LEN: f32 = 8.5;
+
+/// The cover ring's motion between frames. Every bar gets its own level against its recent
+/// range, so a loud, steady bass doesn't sit pinned at full while the highs barely move: each
+/// part of the spectrum lights up when *it* changes. The spectrum runs once around the cover
+/// (low to high, clockwise) and drifts slowly round; peaks hang and fall; beats push the ring
+/// out and flash the glow.
+pub(crate) struct CoverRing {
+    avg: [f32; RING_BARS],
+    high: [f32; RING_BARS],
+    shown: [f32; RING_BARS],
+    peak: [f32; RING_BARS],
+    hold: [f32; RING_BARS],
+    spin: f32,
+    pulse: f32,
+    beats: u64,
+}
+
+impl Default for CoverRing {
+    fn default() -> Self {
+        Self {
+            avg: [0.0; RING_BARS],
+            high: [0.0; RING_BARS],
+            shown: [0.0; RING_BARS],
+            peak: [0.0; RING_BARS],
+            hold: [0.0; RING_BARS],
+            spin: 0.0,
+            pulse: 0.0,
+            beats: 0,
+        }
     }
 }
 
+impl CoverRing {
+    fn update(&mut self, a: &AnalysisFrame, dt: f32) {
+        let dt = dt.clamp(0.0, 0.1);
+        let ease = |rate: f32| 1.0 - (-rate * dt).exp();
+        for i in 0..RING_BARS {
+            let band = i as f32 / (RING_BARS - 1) as f32 * TOP_BAND;
+            let lo = band.floor() as usize;
+            let hi = (lo + 1).min(crate::audio::BANDS - 1);
+            let v = (a.bands[lo] + (a.bands[hi] - a.bands[lo]) * band.fract()).clamp(0.0, 1.0);
+            // Recent average and a slowly falling ceiling for this bar.
+            self.avg[i] += (v - self.avg[i]) * ease(0.7);
+            self.high[i] = v
+                .max(self.high[i] - 0.3 * dt)
+                .max(self.avg[i] + 0.25)
+                .max(0.15);
+            let floor = self.avg[i] * 0.8;
+            let rel = ((v - floor) / (self.high[i] - floor)).clamp(0.0, 1.0);
+            // Mostly relative, with some of the real level so loud parts still look bigger.
+            let target = 0.75 * rel + 0.25 * v;
+            let rate = if target > self.shown[i] { 40.0 } else { 7.0 };
+            self.shown[i] += (target - self.shown[i]) * ease(rate);
+            if self.shown[i] >= self.peak[i] {
+                self.peak[i] = self.shown[i];
+                self.hold[i] = 0.3;
+            } else if self.hold[i] > 0.0 {
+                self.hold[i] -= dt;
+            } else {
+                self.peak[i] = (self.peak[i] - 1.1 * dt).max(self.shown[i]);
+            }
+        }
+        if a.beat_count != self.beats {
+            self.beats = a.beat_count;
+            self.pulse = 1.0;
+        }
+        self.pulse *= 1.0 - ease(5.0);
+        self.spin = (self.spin + dt / 40.0).fract();
+    }
+
+    /// Draws the ring around `art`; `amount` fades it in and out.
+    fn draw(&self, ui: &mut Ui, art: Rect, amount: f32) {
+        let t = ui.theme.clone();
+        let (cx, cy) = art.center();
+        let gap = RING_GAP + 1.5 * self.pulse;
+        let half = art.w / 2.0 + gap;
+        let radius = 8.0 + gap;
+        let perimeter = edge_perimeter(half, radius);
+        // A flash in the theme's accent on each beat.
+        let g = 4.0 + 3.0 * self.pulse;
+        ui.c.glow(
+            Rect::new(art.x - g, art.y - g, art.w + 2.0 * g, art.h + 2.0 * g),
+            t.accent.alpha((0.08 + 0.32 * self.pulse) * amount),
+            12.0,
+            14.0,
+        );
+        for i in 0..RING_BARS {
+            let f = i as f32 / (RING_BARS - 1) as f32;
+            let s = (i as f32 / RING_BARS as f32 + self.spin) * perimeter;
+            let ((x, y), (nx, ny)) = edge_point(half, radius, s);
+            let (x0, y0) = (cx + x, cy + y);
+            let v = self.shown[i];
+            let at = |len: f32| (x0 + nx * len, y0 + ny * len);
+            let len = 1.0 + RING_LEN * v * amount;
+            // Colored by frequency from the theme's spectrum; loud bars run hot toward the
+            // theme's foreground at the tip.
+            let base = t.gradient(f);
+            ui.c.line(
+                at(0.0),
+                at(len),
+                2.0,
+                base.alpha((0.35 + 0.65 * v) * amount),
+            );
+            if v > 0.45 {
+                let tip = (v - 0.45) / 0.55;
+                ui.c.line(
+                    at(len * 0.6),
+                    at(len),
+                    2.0,
+                    base.lerp(t.fg, 0.5).alpha(tip * amount),
+                );
+            }
+            let p = self.peak[i];
+            if p > 0.08 && p > v + 0.04 {
+                let (px, py) = at(1.0 + RING_LEN * p * amount + 2.5);
+                ui.c.circle(px, py, 1.1, base.lerp(t.fg, 0.4).alpha(0.85 * amount));
+            }
+        }
+    }
+}
 fn edge_perimeter(half: f32, radius: f32) -> f32 {
     8.0 * (half - radius) + std::f32::consts::TAU * radius
 }
@@ -549,6 +648,34 @@ fn edge_point(half: f32, radius: f32, s: f32) -> ((f32, f32), (f32, f32)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ring_shows_changes_not_just_loudness() {
+        let mut ring = CoverRing::default();
+        let mut a = AnalysisFrame::default();
+        // A steady, loud low end settles mid-height instead of sitting pinned at full.
+        a.bands[..20].fill(1.0);
+        for _ in 0..300 {
+            ring.update(&a, 1.0 / 60.0);
+        }
+        assert!(
+            ring.shown[..10].iter().all(|&v| v > 0.35 && v < 0.7),
+            "{:?}",
+            &ring.shown[..10]
+        );
+        assert!(ring.shown[60..].iter().all(|&v| v < 0.05));
+        // A hit up top lights up the highs and leaves a peak behind as it falls.
+        a.bands[40..].fill(0.6);
+        for _ in 0..6 {
+            ring.update(&a, 1.0 / 60.0);
+        }
+        assert!(ring.shown[60] > 0.8, "{}", ring.shown[60]);
+        a.bands[40..].fill(0.0);
+        for _ in 0..12 {
+            ring.update(&a, 1.0 / 60.0);
+        }
+        assert!(ring.peak[60] > ring.shown[60] + 0.2);
+    }
     use crate::model::{QueueEntry, Track};
     use std::sync::Arc;
 

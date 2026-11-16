@@ -217,6 +217,7 @@ pub struct Gui {
     pub background_fps: u32,
     /// Draw the spectrum ring around the player bar's cover.
     pub(crate) cover_visualizer: bool,
+    pub(crate) ring: crate::gui::player_bar::CoverRing,
     pub(crate) config_path: Option<PathBuf>,
     /// Measured frames per second while animating.
     pub(crate) measured_fps: f32,
@@ -318,6 +319,7 @@ impl Gui {
             fps: g.fps.clamp(10, 360),
             background_fps: g.background_fps.clamp(1, 360),
             cover_visualizer: g.cover_visualizer,
+            ring: Default::default(),
             config_path: config.source.clone(),
             measured_fps: 0.0,
             kb_nav: false,
