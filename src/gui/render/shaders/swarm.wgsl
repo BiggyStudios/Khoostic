@@ -18,10 +18,8 @@ const WALL_ROWS: u32 = 32u;
 const WALL_COLS: u32 = 32u;
 /// Each bar is two cubes wide and this many high.
 const BAR_ROWS: u32 = 216u;
-/// No cube gets closer to the camera than this (world units)...
+/// No cube ever gets closer to the camera than this (world units).
 const NEAR: f32 = 1.9;
-/// ...and they start getting pushed back here.
-const CLEAR: f32 = 2.8;
 
 struct Scene {
     view_proj: mat4x4<f32>,
@@ -137,6 +135,16 @@ fn curl(p: vec3<f32>, t: f32) -> vec3<f32> {
     return vec3<f32>(py.z - pz.y, pz.x - px.z, px.y - py.x);
 }
 
+/// `v` without its part along `axis` (a unit vector).
+fn flatten(v: vec3<f32>, axis: vec3<f32>) -> vec3<f32> {
+    return v - axis * dot(v, axis);
+}
+
+fn safe_normalize(v: vec3<f32>) -> vec3<f32> {
+    let l = length(v);
+    return select(vec3<f32>(1.0, 0.0, 0.0), v / l, l > 1e-5);
+}
+
 // The storm's heart drifts around a little.
 fn heart(t: f32) -> vec3<f32> {
     return vec3<f32>(sin(t * 0.21) * 0.35, sin(t * 0.17 + 1.0) * 0.18, cos(t * 0.13) * 0.25);
@@ -213,60 +221,63 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
+    let center = heart(t);
+    // The storm moves across the view, not at it: depth is measured along the line from the
+    // camera to the heart, and every push works mostly in the plane facing the camera.
+    let fwd = normalize(center - u.cam.xyz);
+
     var age = c.vel.w;
     if age < 0.0 {
-        // Just broke loose: a kick up and out of the bar.
+        // Just broke loose: a kick up and to the side, out of the bar.
         age = 0.0;
         if c.pos.w <= 0.0 {
             // Not part of the bar right now: start from its top instead of thin air.
             p.y = min(p.y, bar_top(i));
         }
-        let out = normalize(seed - 0.5 + vec3<f32>(0.0, 0.6, 0.4));
-        v = out * (0.6 + seed.y * 1.4) + vec3<f32>(0.0, 0.5, 0.0);
+        let out = flatten(seed - 0.5 + vec3<f32>(0.0, 0.7, 0.0), fwd);
+        v = safe_normalize(out) * (0.5 + seed.y * 1.2) + vec3<f32>(0.0, 0.4, 0.0);
     }
     age += dt;
 
-    let center = heart(t);
     let r = p - center;
     let dist = max(length(r), 1e-4);
     let dir = r / dist;
+    // Outward, as seen from the camera.
+    let side = safe_normalize(flatten(r, fwd) + (seed - 0.5) * 0.05);
+    let depth = dot(r, fwd);
     let flow = curl(p * select(0.9, 0.7, spark) + seed * 0.2, t * (0.6 + mid * 0.8));
 
     // Carried by the flow, faster when this cube's band is loud.
     let speed = select(0.7, 1.1, spark) * (0.4 + 1.1 * mine + 0.5 * mid);
     v += (flow * speed - v) * min(dt * select(1.6, 0.6, spark), 1.0);
-    // Spin around the vertical axis.
-    v += cross(vec3<f32>(0.0, 1.0, 0.0), r) * (0.25 + mid * 1.2) * dt;
+    // A vortex facing the camera, tilted a little so it still has some depth.
+    let axis = normalize(fwd + vec3<f32>(0.0, 0.35, 0.0));
+    v += cross(axis, r) * (0.25 + mid * 1.2) * dt;
     // Held together loosely around the heart (sparks roam further).
     let radius = select(0.55, 1.5, spark) * (1.0 + bass * 0.5);
     v -= dir * max(dist - radius, 0.0) * select(7.0, 1.2, spark) * dt;
     // The sand also leans gently into the heart, so it stays a dense cloud.
     v -= r * select(0.7, 0.0, spark) * dt;
-    // Bass blows the storm apart; beats kick it.
-    v += dir * (bass * bass * select(1.6, 3.0, spark) + beat * select(5.0, 9.0, spark)) * dt;
+    // A shallow layer: depth springs back to the heart's, and motion toward or away from the
+    // camera dies out quickly.
+    v -= fwd * depth * select(3.0, 1.5, spark) * dt;
+    v -= fwd * dot(v, fwd) * min(dt * 3.0, 1.0);
+    // Bass blows the storm apart and beats kick it, outward across the view.
+    v += side * (bass * bass * select(1.6, 3.0, spark) + beat * select(5.0, 9.0, spark)) * dt;
     // Treble shimmers.
-    v += (hash3(i ^ u32(t * 60.0)) - 0.5) * treble * 4.0 * dt;
-    // Keep clear of the camera: pushed back well before they get close, and never closer
-    // than NEAR, so nothing flies into your face.
-    let from_cam = p - u.cam.xyz;
-    let cam_dist = max(length(from_cam), 1e-4);
-    let away = from_cam / cam_dist;
-    if cam_dist < CLEAR {
-        let k = (CLEAR - cam_dist) / (CLEAR - NEAR);
-        v += away * k * k * 30.0 * dt;
-        // Don't keep heading at the camera.
-        v -= away * min(dot(v, away), 0.0) * min(k * 4.0 * dt * 60.0, 1.0);
-    }
+    v += flatten(hash3(i ^ u32(t * 60.0)) - 0.5, fwd) * treble * 4.0 * dt;
+    // A safety net only (the forces above keep the storm away): never closer than NEAR.
     p += v * dt;
-    let now_dist = length(p - u.cam.xyz);
-    if now_dist < NEAR {
-        p = u.cam.xyz + normalize(p - u.cam.xyz + away * 1e-3) * NEAR;
+    let from_cam = p - u.cam.xyz;
+    if length(from_cam) < NEAR {
+        let away = safe_normalize(from_cam);
+        p = u.cam.xyz + away * NEAR;
         v -= away * min(dot(v, away), 0.0);
     }
 
-    // Sparks that fly too far come back out of the heart.
+    // Sparks that fly too far come back out of the heart, heading off across the view.
     if spark && dist > 2.8 {
-        let d = normalize(hash3(i + u32(t * 1000.0)) - 0.5);
+        let d = safe_normalize(flatten(hash3(i + u32(t * 1000.0)) - 0.5, fwd));
         p = center + d * 0.2;
         v = d * (1.2 + bass * 2.5 + seed.z);
     }
