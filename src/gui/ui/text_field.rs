@@ -65,6 +65,12 @@ impl Ui<'_> {
                         field.cursor += 1;
                         changed = true;
                     }
+                    Key::Paste => {
+                        let text = one_line(&self.input.paste);
+                        field.text.insert_str(field.cursor, &text);
+                        field.cursor += text.len();
+                        changed |= !text.is_empty();
+                    }
                     Key::Backspace => {
                         let from = if k.ctrl {
                             word_left(&field.text, field.cursor)
@@ -210,6 +216,20 @@ impl Ui<'_> {
     }
 }
 
+/// Pasted text as one line: line breaks and tabs become spaces, other control characters go,
+/// and the ends are trimmed (a copied key often brings a trailing newline).
+fn one_line(s: &str) -> String {
+    let s: String = s
+        .chars()
+        .filter_map(|c| match c {
+            '\r' | '\n' | '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect();
+    s.trim().to_owned()
+}
+
 fn prev_boundary(s: &str, i: usize) -> usize {
     s[..i].char_indices().next_back().map_or(0, |(j, _)| j)
 }
@@ -293,5 +313,15 @@ mod tests {
         let u = "aé日";
         assert_eq!(next_boundary(u, 1), 3);
         assert_eq!(prev_boundary(u, u.len()), 3);
+    }
+
+    #[test]
+    fn pasted_text_is_one_line() {
+        assert_eq!(one_line("  abc123\r\n"), "abc123");
+        assert_eq!(
+            one_line("daft punk\none more time"),
+            "daft punk one more time"
+        );
+        assert_eq!(one_line("a\u{7}b\tc"), "ab c");
     }
 }

@@ -36,6 +36,8 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    /// Ctrl+V or Shift+Insert; the text is in `Input::paste`.
+    Paste,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +62,8 @@ pub struct Input {
     pub scroll: f32,
     pub keys: Vec<KeyPress>,
     pub dropped: Vec<std::path::PathBuf>,
+    /// Clipboard text for `Key::Paste` presses this frame.
+    pub paste: String,
 }
 
 impl Input {
@@ -73,6 +77,7 @@ impl Input {
         self.scroll = 0.0;
         self.keys.clear();
         self.dropped.clear();
+        self.paste.clear();
     }
 }
 

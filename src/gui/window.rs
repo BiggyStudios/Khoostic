@@ -243,6 +243,26 @@ impl WinitApp {
     }
 
     fn key(&mut self, key: &WKey) {
+        let (ctrl, shift) = (self.modifiers.control_key(), self.modifiers.shift_key());
+        let paste = match key {
+            WKey::Character(s) => ctrl && s.eq_ignore_ascii_case("v"),
+            WKey::Named(NamedKey::Insert) => shift,
+            _ => false,
+        };
+        if paste {
+            match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+                Ok(text) => {
+                    self.input.paste = text;
+                    self.input.keys.push(KeyPress {
+                        key: Key::Paste,
+                        shift,
+                        ctrl,
+                    });
+                }
+                Err(e) => tracing::debug!("clipboard: {e}"),
+            }
+            return;
+        }
         let k = match key {
             WKey::Named(n) => match n {
                 NamedKey::Space => Key::Space,
@@ -270,8 +290,8 @@ impl WinitApp {
         };
         self.input.keys.push(KeyPress {
             key: k,
-            shift: self.modifiers.shift_key(),
-            ctrl: self.modifiers.control_key(),
+            shift,
+            ctrl,
         });
     }
 }

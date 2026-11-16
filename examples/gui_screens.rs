@@ -111,10 +111,14 @@ fn main() -> anyhow::Result<()> {
     shot(&mut h, "lib-artists", &keys(&[Key::Char('2')]))?;
     shot(&mut h, "lib-songs", &keys(&[Key::Char('3')]))?;
     h.frame(&keys(&[Key::Char('/')]), &player)?;
+    // Typed, then pasted (the trailing newline a copy often brings is dropped).
     shot(
         &mut h,
         "lib-search",
-        &keys(&[Key::Char('b'), Key::Char('a')]),
+        &Input {
+            paste: "a\r\n".into(),
+            ..keys(&[Key::Char('b'), Key::Paste])
+        },
     )?;
     player.send(khoostic::player::PlayerCommand::Enqueue(
         library
