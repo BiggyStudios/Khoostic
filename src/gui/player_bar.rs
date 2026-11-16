@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use crate::audio::{AnalysisFrame, PlaybackState};
-use crate::gui::app::{Drag, Gui, View, fmt_time};
+use crate::gui::app::{Drag, Gui, fmt_time};
 use crate::gui::render::{Color, Rect, Weight};
 use crate::gui::ui::Ui;
 use crate::gui::ui::anim;
@@ -351,7 +351,7 @@ impl Gui {
                 None => self.toast("Play something first, or right-click a song 'Start radio'"),
             }
         }
-        let on_queue = self.view == View::Queue;
+        let on_queue = self.queue_open;
         let qc = if on_queue { accent } else { dim };
         if ui.icon_button(
             anim::id("np-queue"),
@@ -361,11 +361,7 @@ impl Gui {
             qc,
             if on_queue { accent } else { fg },
         ) {
-            if on_queue {
-                self.back();
-            } else {
-                self.navigate(View::Queue);
-            }
+            self.queue_open = !on_queue;
         }
     }
 }

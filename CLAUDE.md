@@ -22,7 +22,7 @@ only uses the ones listed above it here (keep it that way; no cycles back up).
 | `lastfm/` | Signed API client, browser sign-in, scrobble rules (`tracker.rs`, pure), background scrobbler with a persisted offline queue, similar tracks |
 | `discovery.rs` | Song radio (Spotify radio + Last.fm similar, matched to local files first, library-only fallback) and the autoplay watcher |
 | `services.rs` | `Services::start`: library, Spotify, Last.fm, player and discovery wired together; `Launch` (paths from the command line) |
-| `gui/` | `window.rs` event loop + frame pacing, `headless.rs` offscreen; `app.rs` state + frame layout, `sidebar.rs`, `player_bar.rs`, `menu.rs`, `spotify.rs` (Spotify data); `views/` one file per page (+ `lists.rs` track rows, `grid.rs` cover tiles); `ui/` widgets, `anim.rs`, `icons.rs`, `text_field.rs`; `render/` canvas, SDF painter (boxes, triangles, lines, arcs), images, glyphon text, wgpu (Vulkan only) |
+| `gui/` | `window.rs` event loop + frame pacing, `headless.rs` offscreen; `app.rs` state + frame layout (top bar, library panel, page, queue panel, player bar: `top_bar.rs`, `sidebar.rs`, `queue_panel.rs`, `player_bar.rs`), `menu.rs`, `spotify.rs` (Spotify data); `views/` one file per page (+ `lists.rs` track rows, `grid.rs` cover tiles); `ui/` widgets, `anim.rs`, `icons.rs`, `text_field.rs`; `render/` canvas, SDF painter (boxes, triangles, lines, arcs), images, glyphon text, wgpu (Vulkan only) |
 | `tui/` | ratatui frontend: keymap engine (vim notation, counts), modes, views, half-block covers |
 | `main.rs` | CLI: `khoostic [paths] [--tui] [--play] [--shuffle]`, `devices`, `config`, `spotify`/`lastfm` `login/logout/status` |
 

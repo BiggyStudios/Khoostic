@@ -9,10 +9,11 @@ use crate::audio::PlaybackState;
 use crate::config::Config;
 use crate::discovery::Discovery;
 use crate::gui::player_bar::PlayClock;
+use crate::gui::queue_panel::QUEUE_W;
 use crate::gui::render::images::ImageStore;
 use crate::gui::render::text::TextSystem;
 use crate::gui::render::{Canvas, Color, Rect, Weight};
-use crate::gui::ui::anim::{Anims, ease_out};
+use crate::gui::ui::anim::{self, Anims, ease_out};
 use crate::gui::ui::{Input, Key, TextField, Theme, Ui};
 use crate::library::{Album, Artist, Library, TrackOrder};
 use crate::model::{Track, TrackLocator};
@@ -24,6 +25,8 @@ pub(crate) const SIDEBAR_W: f32 = 236.0;
 pub(crate) const BAR_H: f32 = 96.0;
 pub(crate) const ROW_H: f32 = 48.0;
 pub(crate) const PAD: f32 = 32.0;
+/// Height of the top bar (search, navigation).
+pub(crate) const TOP_H: f32 = 64.0;
 
 /// Space between the content panel and the window edges.
 const GAP: f32 = 8.0;
@@ -42,7 +45,6 @@ pub enum View {
     Artist(String),
     Songs,
     Search,
-    Queue,
     Files,
     Visualizer,
     Playlists,
@@ -143,6 +145,10 @@ pub struct Gui {
     pub library: Arc<Library>,
     pub view: View,
     pub(crate) history: Vec<View>,
+    /// Views gone back from, for the forward button.
+    pub(crate) forward: Vec<View>,
+    /// The queue panel is showing on the right.
+    pub(crate) queue_open: bool,
     pub(crate) lists: std::collections::HashMap<&'static str, ListState>,
     pub(crate) browser: Browser,
     pub(crate) music_dirs: Vec<PathBuf>,
@@ -221,6 +227,8 @@ impl Gui {
             library,
             view: View::Albums,
             history: Vec::new(),
+            forward: Vec::new(),
+            queue_open: false,
             lists: Default::default(),
             browser: Browser::new(start),
             music_dirs,
@@ -262,6 +270,7 @@ impl Gui {
     /// Opens a view, remembering where we came from (for Backspace / mouse back).
     pub fn navigate(&mut self, view: View) {
         if view != self.view {
+            self.forward.clear();
             let prev = std::mem::replace(&mut self.view, view);
             self.history.push(prev);
             if self.history.len() > 64 {
@@ -273,16 +282,25 @@ impl Gui {
     /// Switches section from the sidebar: no history, like tabs.
     pub(crate) fn switch(&mut self, view: View) {
         self.history.clear();
+        self.forward.clear();
         self.view = view;
     }
 
     pub(crate) fn back(&mut self) -> bool {
         match self.history.pop() {
             Some(v) => {
-                self.view = v;
+                let from = std::mem::replace(&mut self.view, v);
+                self.forward.push(from);
                 true
             }
             None => false,
+        }
+    }
+
+    pub(crate) fn go_forward(&mut self) {
+        if let Some(v) = self.forward.pop() {
+            let from = std::mem::replace(&mut self.view, v);
+            self.history.push(from);
         }
     }
 
@@ -380,13 +398,52 @@ impl Gui {
         if self.menu.is_some() {
             ui.input = &masked;
         }
+        // Top bar, then three panels (library | page | queue), then the player bar.
         let full = ui.c.bounds();
         let (body, bar) = full.split_bottom(BAR_H);
-        let (sidebar, rest) = body.split_left(SIDEBAR_W);
-        let panel = Rect::new(rest.x, rest.y + GAP, rest.w - GAP, rest.h - GAP);
+        let (top, mid) = body.split_top(TOP_H);
+        let sidebar = Rect::new(mid.x + GAP, mid.y, SIDEBAR_W - GAP, mid.h);
+        let queue_w = QUEUE_W.min((mid.w - SIDEBAR_W - 3.0 * GAP) * 0.42).max(0.0);
+        let q = ui.anim.to(
+            anim::id("queue-open"),
+            self.queue_open as u8 as f32,
+            anim::NORMAL,
+        );
+        let queue_space = (queue_w + GAP) * q;
+        let panel_x = sidebar.right() + GAP;
+        let panel = Rect::new(
+            panel_x,
+            mid.y,
+            mid.right() - GAP - queue_space - panel_x,
+            mid.h,
+        );
 
-        self.sidebar(&mut ui, sidebar, player);
-        ui.c.rect(panel, theme.surface, 16.0);
+        self.top_bar(&mut ui, top, panel.x);
+        ui.c.push_clip(sidebar);
+        self.sidebar(&mut ui, sidebar);
+        ui.c.pop_clip();
+        if q > 0.005 {
+            // Slides in from the right edge as the page makes room.
+            let qr = Rect::new(panel.right() + GAP, mid.y, queue_w, mid.h);
+            ui.c.push_clip(Rect::new(
+                panel.right(),
+                mid.y,
+                mid.right() - panel.right(),
+                mid.h,
+            ));
+            ui.c.push_fx(0.0, 0.0, q);
+            self.queue_panel(&mut ui, qr, player, &snap, &analysis);
+            ui.c.pop_fx();
+            ui.c.pop_clip();
+        }
+        ui.c.rect(panel, theme.surface, 12.0);
+        // A faint wash of the accent color at the top of the page.
+        ui.c.gradient(
+            Rect::new(panel.x, panel.y, panel.w, 220.0_f32.min(panel.h)),
+            theme.accent.alpha(0.035),
+            theme.accent.alpha(0.0),
+            12.0,
+        );
         let main = Rect::new(
             panel.x + PAD,
             panel.y + PAD - 4.0,
@@ -498,7 +555,7 @@ impl Gui {
                 Key::Char('1') => self.switch(View::Albums),
                 Key::Char('2') => self.switch(View::Artists),
                 Key::Char('3') => self.switch(View::Songs),
-                Key::Char('4') => self.switch(View::Queue),
+                Key::Char('4') => self.queue_open = !self.queue_open,
                 Key::Char('5') => self.switch(View::Files),
                 Key::Char('6') => self.switch(View::Visualizer),
                 Key::Char('o') => self.reveal_playing(player),
@@ -508,11 +565,9 @@ impl Gui {
     }
 
     fn reveal_playing(&mut self, player: &Player) {
-        if let Some(i) = player.queue().read().current_index() {
-            self.switch(View::Queue);
-            let l = self.list("queue");
-            l.selected = i;
-            l.reveal(i, ROW_H);
+        if player.queue().read().current_index().is_some() {
+            self.queue_open = true;
+            self.list("queue").target = 0.0;
         }
     }
 

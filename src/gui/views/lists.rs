@@ -59,12 +59,36 @@ impl Gui {
             let hover = ui.hovered(row) && ui.hovered(r);
             let is_playing = playing == Some(&tr.locator);
             row_bg(ui, anim::id((key, i)), row, hover, i == ls.selected);
-            let num = if style.track_numbers {
+            // Hovering a row turns its number into a play button (one click plays).
+            let numr = Rect::new(row.x, row.y, cols.num, row.h);
+            let show_play = hover && !is_playing;
+            let num = if show_play {
+                String::new()
+            } else if style.track_numbers {
                 tr.track_number.map(|n| n.to_string()).unwrap_or_default()
             } else {
                 (i + 1).to_string()
             };
             draw_track_row(ui, row, tr, &num, is_playing, snap.state, a, &cols);
+            if show_play {
+                let t = ui.theme;
+                let on = ui.hovered(numr);
+                icons::draw(
+                    ui.c,
+                    Icon::Play,
+                    Rect::new(
+                        numr.right() - 22.0,
+                        row.y + (row.h - 14.0) / 2.0,
+                        14.0,
+                        14.0,
+                    ),
+                    if on { t.fg } else { t.fg.alpha(0.8) },
+                );
+                ui.pointer |= on;
+                if on && ui.input.pressed {
+                    action = RowAction::Play(i);
+                }
+            }
             if hover && ui.input.pressed {
                 ls.selected = i;
                 if ui.input.double_click {

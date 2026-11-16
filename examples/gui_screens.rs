@@ -116,7 +116,15 @@ fn main() -> anyhow::Result<()> {
         "lib-search",
         &keys(&[Key::Char('b'), Key::Char('a')]),
     )?;
-    shot(&mut h, "lib-queue", &keys(&[Key::Escape, Key::Char('4')]))?;
+    player.send(khoostic::player::PlayerCommand::Enqueue(
+        library
+            .all_tracks(khoostic::library::TrackOrder::Title)
+            .into_iter()
+            .take(5)
+            .collect(),
+    ));
+    h.frame(&keys(&[Key::Escape]), &player)?;
+    shot(&mut h, "lib-queue", &keys(&[Key::Char('4')]))?;
 
     // Playlists: make a Khoostic playlist, open the context menu on a song, view Playlists.
     let some: Vec<_> = library
@@ -130,21 +138,26 @@ fn main() -> anyhow::Result<()> {
     library.create_playlist("Road trip", &some)?;
     h.frame(&keys(&[Key::Char('3')]), &player)?;
     let row = Input {
-        mouse: Some((600.0, 110.0 + 36.0 + 2.0 * 46.0 + 20.0)),
+        mouse: Some((600.0, 330.0)),
         right_pressed: true,
         ..Default::default()
     };
     shot(&mut h, "sp-menu", &row)?;
     h.frame(&keys(&[Key::Escape]), &player)?;
-    shot(&mut h, "sp-playlists", &click(100.0, 280.0, false))?;
-    shot(&mut h, "settings", &click(100.0, 670.0, false))?;
+    shot(&mut h, "sp-playlists", &click(100.0, 258.0, false))?;
+    shot(&mut h, "settings", &click(1250.0, 32.0, false))?;
     shot(&mut h, "visualizer", &keys(&[Key::Char('6')]))?;
     h.frame(&keys(&[Key::Char('1')]), &player)?;
+    h.frame(&keys(&[Key::Char('4')]), &player)?;
     let hover = |x: f32, y: f32| Input {
         mouse: Some((x, y)),
         ..Default::default()
     };
-    shot(&mut h, "hover-tile", &hover(560.0, 200.0))?;
+    shot(&mut h, "hover-tile", &hover(560.0, 260.0))?;
     shot(&mut h, "hover-seek", &hover(560.0, 774.0))?;
+    // The smallest window the GUI allows, with the queue open.
+    h.size = (720, 480);
+    h.frame(&keys(&[Key::Char('4')]), &player)?;
+    shot(&mut h, "narrow", &hover(10.0, 10.0))?;
     Ok(())
 }

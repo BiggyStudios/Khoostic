@@ -8,7 +8,6 @@ pub mod grid;
 pub mod library;
 pub mod lists;
 pub mod playlists;
-pub mod queue;
 pub mod search;
 pub mod settings;
 pub mod visualizer;
@@ -41,7 +40,6 @@ impl Gui {
             View::Artist(name) => self.artist_view(ui, r, player, &name),
             View::Songs => self.songs_view(ui, r, player, snap, a),
             View::Search => self.search_view(ui, r, player, snap, a),
-            View::Queue => self.queue_view(ui, r, player, snap, a),
             View::Files => self.files_view(ui, r, player),
             View::Visualizer => self.visualizer(ui, r, a, dt),
             View::Playlists => self.playlists_view(ui, r, player),
@@ -128,7 +126,6 @@ impl Gui {
                 self.cache.search.as_ref().map_or(0, |s| s.1.len()),
                 false,
             ),
-            View::Queue => ("queue", player.queue().read().len(), false),
             View::Files => ("files", self.browser.entries().len(), false),
             View::Visualizer | View::Playlists | View::Settings => return,
             View::LocalPlaylist(_)
@@ -182,18 +179,6 @@ impl Gui {
             (Key::Enter, View::Artists) => {
                 let name = self.cache.artists[sel].name.clone();
                 self.navigate(View::Artist(name));
-            }
-            (Key::Enter, View::Queue) => {
-                let id = player.queue().read().entries().get(sel).map(|e| e.id);
-                if let Some(id) = id {
-                    player.send(Cmd::PlayEntry(id));
-                }
-            }
-            (Key::Delete | Key::Char('x'), View::Queue) => {
-                let id = player.queue().read().entries().get(sel).map(|e| e.id);
-                if let Some(id) = id {
-                    player.send(Cmd::Remove(vec![id]));
-                }
             }
             (Key::Enter | Key::Char('l'), View::Files) => self.files_open(sel, player),
             (Key::Backspace | Key::Char('h'), View::Files) => self.files_up(),
