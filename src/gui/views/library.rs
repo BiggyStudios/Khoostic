@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::audio::AnalysisFrame;
 use crate::gui::app::{Gui, View, count, fmt_long};
-use crate::gui::render::{Color, Rect, Weight};
+use crate::gui::render::{Rect, Weight};
 use crate::gui::ui::icons::Icon;
 use crate::gui::ui::{Ui, anim};
 use crate::gui::views::lists::{TrackListStyle, column_header, row_bg, scrollbar_rows};
@@ -85,7 +85,7 @@ impl Gui {
 
         let size = 196.0f32.min(r.w * 0.3);
         let cover = Rect::new(r.x, r.y, size, size);
-        ui.c.glow(cover, Color::BLACK.alpha(0.55), t.radius, 22.0);
+        ui.c.glow(cover, ui.theme.shadow(0.55), t.radius, 22.0);
         ui.cover(
             cover,
             cover_ref.as_ref(),
@@ -263,7 +263,7 @@ impl Gui {
             .cloned();
 
         let avatar = Rect::new(r.x, r.y, 132.0, 132.0);
-        ui.c.glow(avatar, Color::BLACK.alpha(0.5), 66.0, 18.0);
+        ui.c.glow(avatar, ui.theme.shadow(0.5), 66.0, 18.0);
         ui.cover(
             avatar,
             info.as_ref().and_then(|i| i.cover.as_ref()),

@@ -12,6 +12,9 @@ pub struct Preset {
     pub dim: &'static str,
     pub accent: &'static str,
     pub playing: &'static str,
+    /// Round filled buttons (play), and the icon on them.
+    pub button: &'static str,
+    pub on_button: &'static str,
     /// Visualizer colors, low to high.
     pub spectrum: &'static [&'static str],
     /// How colorful art-derived washes (artist headers, cover placeholders) may be: 0 is
@@ -33,23 +36,28 @@ pub const PRESETS: &[Preset] = &[
         dim: "#8c8c94",
         accent: "#f4f4f5",
         playing: "#ffffff",
+        button: "#f4f4f5",
+        on_button: "#09090b",
         spectrum: &["#4b4b53", "#8f8f97", "#d2d2d8", "#ffffff"],
         saturation: 0.0,
         pull: 0.0,
     },
+    // Light: blush pages, deeper pink panels, plum text, pink round buttons.
     Preset {
         key: "pink",
         name: "Pink",
-        background: "#12080f",
-        surface: "#1f0d19",
-        surface_hover: "#311428",
-        fg: "#fff0f8",
-        dim: "#c294ad",
-        accent: "#ff3fa4",
-        playing: "#ff6ec2",
-        spectrum: &["#ff9fd2", "#ff5cbc", "#ff2d95", "#ff47d6"],
-        saturation: 0.8,
-        pull: 0.6,
+        background: "#f2d1e0",
+        surface: "#f9e7f0",
+        surface_hover: "#f1d3e1",
+        fg: "#432a35",
+        dim: "#9a7d8b",
+        accent: "#a2607f",
+        playing: "#b8447c",
+        button: "#e8a9c7",
+        on_button: "#521d38",
+        spectrum: &["#eeb3cd", "#de86ae", "#c25d8b", "#7f3456"],
+        saturation: 0.55,
+        pull: 0.55,
     },
     // Catppuccin Mocha (catppuccin.com/palette): crust, base, surface0, text, overlay2,
     // mauve, green; sky, blue, mauve and pink for the visualizer.
@@ -63,6 +71,8 @@ pub const PRESETS: &[Preset] = &[
         dim: "#9399b2",
         accent: "#cba6f7",
         playing: "#a6e3a1",
+        button: "#cba6f7",
+        on_button: "#11111b",
         spectrum: &["#89dceb", "#89b4fa", "#cba6f7", "#f5c2e7"],
         saturation: 1.0,
         pull: 0.15,
@@ -95,6 +105,8 @@ mod tests {
                 p.dim,
                 p.accent,
                 p.playing,
+                p.button,
+                p.on_button,
             ]
             .iter()
             .chain(p.spectrum)

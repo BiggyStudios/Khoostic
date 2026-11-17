@@ -226,11 +226,11 @@ impl Gui {
         let h = ui.hover_t(pid, play);
         let p = ui.press_t(pid, play);
         let rad = 19.0 * (1.0 + 0.06 * h - 0.08 * p);
-        ui.c.circle(cx, cy, rad, t.fg);
+        ui.c.circle(cx, cy, rad, t.button);
         let morph = ui.anim.to(pid ^ 5, playing as u8 as f32, 20.0);
         let s = 18.0 * (1.0 - 0.08 * p);
         let icon_r = Rect::new(cx - s / 2.0, cy - s / 2.0, s, s);
-        let ink = t.background;
+        let ink = t.on_button;
         if morph < 0.999 {
             ui.c.push_fx(0.0, 0.0, 1.0 - morph);
             icons::draw(ui.c, Icon::Play, icon_r, ink);
@@ -514,7 +514,7 @@ pub(crate) fn draw_slider(ui: &mut Ui, r: Rect, frac: f32, hot: f32, fill: Color
         let cy = track.y + th / 2.0;
         ui.c.glow(
             Rect::new(x - 6.0 * hot, cy - 6.0 * hot, 12.0 * hot, 12.0 * hot),
-            Color::BLACK.alpha(0.4 * hot),
+            ui.theme.shadow(0.4 * hot),
             6.0,
             4.0,
         );

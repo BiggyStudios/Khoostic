@@ -121,7 +121,7 @@ impl Gui {
             if h > 0.01 {
                 ui.c.glow(
                     Rect::new(cover.x + 6.0, cover.y + 10.0, cover.w - 12.0, cover.h - 8.0),
-                    Color::BLACK.alpha(0.45 * h),
+                    ui.theme.shadow(0.45 * h),
                     radius,
                     14.0,
                 );
@@ -368,19 +368,19 @@ pub(crate) fn play_button(ui: &mut Ui, id: u64, cover: Rect, h: f32) -> bool {
     // Overlay layer: images draw after shapes within a layer.
     ui.c.set_layer(1);
     ui.c.push_fx(0.0, 0.0, h);
-    ui.c.glow(b, Color::BLACK.alpha(0.5), s / 2.0, 10.0);
+    ui.c.glow(b, ui.theme.shadow(0.5), s / 2.0, 10.0);
     ui.c.circle(
         b.x + s / 2.0,
         b.y + s / 2.0,
         s / 2.0 * (1.0 + 0.06 * bt),
-        ui.theme.accent.lerp(Color::WHITE, 0.12 * bt),
+        ui.theme.button.lerp(Color::WHITE, 0.12 * bt),
     );
     let i = s * 0.42;
     icons::draw(
         ui.c,
         Icon::Play,
         Rect::new(b.x + (s - i) / 2.0 + 1.0, b.y + (s - i) / 2.0, i, i),
-        ui.theme.background,
+        ui.theme.on_button,
     );
     ui.c.pop_fx();
     ui.c.set_layer(0);

@@ -13,7 +13,7 @@ use crate::gui::player_bar::PlayClock;
 use crate::gui::queue_panel::QUEUE_W;
 use crate::gui::render::images::ImageStore;
 use crate::gui::render::text::TextSystem;
-use crate::gui::render::{Canvas, Color, Rect, Weight};
+use crate::gui::render::{Canvas, Rect, Weight};
 use crate::gui::state::UiState;
 use crate::gui::ui::anim::{self, Anims, ease_out};
 use crate::gui::ui::{Input, Key, TextField, Theme, Ui};
@@ -752,7 +752,7 @@ impl Gui {
             42.0,
         );
         ui.c.set_layer(1);
-        ui.c.glow(r, Color::BLACK.alpha(0.45 * alpha), 21.0, 18.0);
+        ui.c.glow(r, ui.theme.shadow(0.45 * alpha), 21.0, 18.0);
         ui.c.rect(r, t.surface_hover.alpha(alpha), 21.0);
         ui.c.outline(r, t.line().alpha(alpha), 21.0, 1.0);
         let msg = msg.clone();
@@ -837,7 +837,7 @@ impl Gui {
         let w = ui.measure(&text, 13.0, Weight::Medium) + 24.0;
         let tip = Rect::new(x, y - 16.0, w, 32.0);
         ui.c.set_layer(1);
-        ui.c.glow(tip, Color::BLACK.alpha(0.5), 6.0, 10.0);
+        ui.c.glow(tip, ui.theme.shadow(0.5), 6.0, 10.0);
         ui.c.rect(tip, t.surface_hover, 6.0);
         ui.label_center(&text, tip, 13.0, Weight::Medium, t.fg);
         ui.c.set_layer(0);

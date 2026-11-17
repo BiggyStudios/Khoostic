@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::gui::app::{Gui, View, count, fmt_long};
-use crate::gui::render::{Color, Rect, Weight};
+use crate::gui::render::{Rect, Weight};
 use crate::gui::ui::Ui;
 use crate::gui::ui::icons::Icon;
 use crate::gui::views::grid::Tile;
@@ -94,7 +94,7 @@ impl Gui {
         let t = ui.theme.clone();
         let size = 180.0f32.min(r.w * 0.28);
         let cover_rect = Rect::new(r.x, r.y, size, size);
-        ui.c.glow(cover_rect, Color::BLACK.alpha(0.55), t.radius, 22.0);
+        ui.c.glow(cover_rect, ui.theme.shadow(0.55), t.radius, 22.0);
         let cover = cover.or_else(|| {
             tracks
                 .as_ref()

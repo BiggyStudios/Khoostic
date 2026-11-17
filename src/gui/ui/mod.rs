@@ -96,6 +96,9 @@ pub struct Theme {
     pub dim: Color,
     pub accent: Color,
     pub playing: Color,
+    /// Round filled buttons (play) and what's drawn on them.
+    pub button: Color,
+    pub on_button: Color,
     pub spectrum: Vec<Color>,
     /// How colorful art-derived washes may be (0 = grayscale) and how far they lean toward
     /// the accent; see [`Theme::tint`].
@@ -139,6 +142,8 @@ impl Theme {
             dim: p(&t.dim, preset.dim),
             accent: p(&t.accent, preset.accent),
             playing: p(&t.playing, preset.playing),
+            button: Color::hex(preset.button).expect("presets parse"),
+            on_button: Color::hex(preset.on_button).expect("presets parse"),
             spectrum: match &t.spectrum {
                 Some(s) => s.iter().filter_map(|c| Color::hex(c)).collect(),
                 None => preset
@@ -158,9 +163,32 @@ impl Theme {
         (theme, problems)
     }
 
+    /// A drop shadow: black on dark themes, a soft tint of the text color on light ones (black
+    /// smudges pale backgrounds).
+    pub fn shadow(&self, alpha: f32) -> Color {
+        if self.is_light() {
+            self.fg.alpha(alpha * 0.35)
+        } else {
+            Color::BLACK.alpha(alpha)
+        }
+    }
+
+    /// Dark text on a light background (Pink) rather than the other way round.
+    pub fn is_light(&self) -> bool {
+        let c = self.background;
+        0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b > 0.5
+    }
+
     /// A color picked from content (an artist, an album) made to fit the theme: no more
     /// colorful than it allows, leaning toward its accent.
     pub fn tint(&self, hue: f32, s: f32, v: f32) -> Color {
+        // Callers ask for dark washes (made for dark themes); on a light theme the same wash is
+        // a pastel: as far below white as it was above black, but gentler.
+        let (s, v) = if self.is_light() {
+            (s * 0.75, 1.0 - (1.0 - v) * 0.22)
+        } else {
+            (s, v)
+        };
         let c = hsv(hue, s * self.saturation, v);
         if self.pull <= 0.0 {
             return c;
@@ -203,7 +231,12 @@ impl Theme {
         let luma = |c: Color| 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
         let (b, f) = (luma(self.surface), luma(self.fg));
         let target = b + (f - b) * amount.min(1.0);
-        let a = (lin(target) - lin(b)) / (lin(f) - lin(b)).max(1e-4);
+        // Toward a dark fg on light themes too: then both differences are negative.
+        let span = lin(f) - lin(b);
+        if span.abs() < 1e-4 {
+            return self.fg.alpha(0.0);
+        }
+        let a = (lin(target) - lin(b)) / span;
         self.fg.alpha(a.clamp(0.0, 1.0))
     }
 
@@ -412,7 +445,7 @@ impl Ui<'_> {
         let target = x + 3.0 + seg_w * selected as f32;
         let sx = self.anim.to(id, target, 20.0);
         let ind = Rect::new(sx, y + 3.0, seg_w, h - 6.0);
-        self.c.glow(ind, Color::BLACK.alpha(0.3), ind.h / 2.0, 6.0);
+        self.c.glow(ind, self.theme.shadow(0.3), ind.h / 2.0, 6.0);
         self.c
             .rect(ind, t.surface_hover.lerp(t.fg, 0.08), ind.h / 2.0);
         let mut clicked = None;

@@ -59,7 +59,7 @@ impl Gui {
                 PORTRAIT - 16.0,
                 PORTRAIT - 10.0,
             ),
-            Color::BLACK.alpha(0.5),
+            ui.theme.shadow(0.5),
             PORTRAIT / 2.0,
             24.0,
         );
@@ -149,13 +149,13 @@ impl Gui {
             play.x + 28.0,
             play.y + 28.0,
             28.0 * (1.0 + 0.04 * ph),
-            t.accent.lerp(Color::WHITE, 0.1 * ph),
+            t.button.lerp(Color::WHITE, 0.1 * ph),
         );
         icons::draw(
             ui.c,
             Icon::Play,
             Rect::new(play.x + 17.0, play.y + 16.0, 24.0, 24.0),
-            t.background,
+            t.on_button,
         );
         ui.pointer |= ui.hovered(play);
         if ui.clicked(play) && !page.top_tracks.is_empty() {

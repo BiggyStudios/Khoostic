@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use crate::gui::app::{Gui, View, count};
-use crate::gui::render::{Color, Rect, Weight};
+use crate::gui::render::{Rect, Weight};
 use crate::gui::sidebar::LibItem;
 use crate::gui::ui::Ui;
 use crate::gui::ui::anim::{self, ease_out};
@@ -121,7 +121,7 @@ impl Gui {
         ui.c.push_fx(0.0, (e - 1.0) * 6.0, e);
         ui.c.glow(
             Rect::new(rect.x, rect.y + 6.0, rect.w, rect.h),
-            Color::BLACK.alpha(0.5),
+            ui.theme.shadow(0.5),
             12.0,
             22.0,
         );

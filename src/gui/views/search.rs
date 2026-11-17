@@ -438,7 +438,7 @@ impl Gui {
         let radius = if round { 48.0 } else { 6.0 };
         ui.c.glow(
             Rect::new(img.x + 4.0, img.y + 8.0, img.w - 8.0, img.h - 4.0),
-            crate::gui::render::Color::BLACK.alpha(0.45),
+            ui.theme.shadow(0.45),
             radius,
             14.0,
         );

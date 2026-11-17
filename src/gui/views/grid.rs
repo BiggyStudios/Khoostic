@@ -85,7 +85,7 @@ impl Gui {
             if h > 0.01 {
                 ui.c.glow(
                     Rect::new(cover.x + 4.0, cover.y + 10.0, cover.w - 8.0, cover.h - 6.0),
-                    Color::BLACK.alpha(0.55 * h),
+                    ui.theme.shadow(0.55 * h),
                     t.radius,
                     16.0,
                 );
@@ -143,18 +143,18 @@ impl Gui {
                 // otherwise sit under the cover art.
                 ui.c.set_layer(1);
                 ui.c.push_fx(0.0, 0.0, h);
-                ui.c.glow(b, Color::BLACK.alpha(0.5), 22.0, 10.0);
+                ui.c.glow(b, ui.theme.shadow(0.5), 22.0, 10.0);
                 ui.c.circle(
                     b.x + 22.0,
                     b.y + 22.0,
                     rad,
-                    t.accent.lerp(Color::WHITE, 0.12 * bt),
+                    t.button.lerp(Color::WHITE, 0.12 * bt),
                 );
                 icons::draw(
                     ui.c,
                     Icon::Play,
                     Rect::new(b.x + 12.5, b.y + 12.0, 20.0, 20.0),
-                    t.background,
+                    t.on_button,
                 );
                 ui.c.pop_fx();
                 ui.c.set_layer(0);

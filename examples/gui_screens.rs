@@ -1,7 +1,7 @@
 //! Renders the real GUI offscreen with scripted input and saves PNGs (volume 0). Uses a
 //! throwaway library index in the temp directory.
 //!
-//! cargo run --example gui_screens -- <music folder> <out dir>
+//! cargo run --example gui_screens -- <music folder> <out dir> [theme]
 
 use std::time::Duration;
 
@@ -49,7 +49,10 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let music = args.next().expect("music folder");
     let out = args.next().expect("output dir");
+    // Optional: the theme to shoot in (khoostic, pink, catppuccin).
+    let theme = args.next().unwrap_or_else(|| "khoostic".into());
     let mut config = Config::default();
+    config.gui.theme.name = theme.clone();
     config.library.music_dirs = vec![music.clone().into()];
     // Lyrics from .lrc files only: no network in screenshots.
     config.lyrics.providers = vec!["local".into()];
@@ -191,8 +194,18 @@ fn main() -> anyhow::Result<()> {
     shot(&mut h, "theme-catppuccin", &Input::default())?;
     shot(&mut h, "lyrics-catppuccin", &keys(&[Key::Char('L')]))?;
     h.frame(&keys(&[Key::Char('L')]), &player)?;
-    // Back to the default theme for the rest.
-    mid(&mut h, "theme-khoostic", &click(428.0, 260.0, false), 1200)?;
+    // Back to the chosen theme for the rest.
+    let card_x = match theme.as_str() {
+        "pink" => 610.0,
+        "catppuccin" => 792.0,
+        _ => 428.0,
+    };
+    mid(
+        &mut h,
+        &format!("theme-{theme}"),
+        &click(card_x, 260.0, false),
+        1200,
+    )?;
     shot(
         &mut h,
         "settings-lyrics",

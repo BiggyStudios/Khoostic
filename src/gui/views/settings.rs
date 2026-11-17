@@ -556,7 +556,7 @@ fn theme_card(ui: &mut Ui, r: Rect, p: &Preset, selected: bool) -> bool {
     let r = Rect::new(r.x, r.y - lift, r.w, r.h);
     ui.c.glow(
         r,
-        Color::BLACK.alpha(0.25 + 0.2 * hover),
+        ui.theme.shadow(0.25 + 0.2 * hover),
         10.0,
         8.0 + 6.0 * hover,
     );
