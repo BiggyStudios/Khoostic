@@ -56,6 +56,16 @@ pub struct AnalysisFrame {
     pub bpm: f32,
     /// How far into the current beat (0 at a beat, 1 at the next); 0 without a tempo.
     pub beat_phase: f32,
+    /// Every percussive hit, not only beats (hats, snares, a drum loop's every hit): a count
+    /// that changes once per hit, and the latest hit's strength next to the song's usual
+    /// (0.2..1).
+    pub onset_count: u64,
+    pub onset_strength: f32,
+    /// How busy the rhythm is (0..1; hits per second, 8 and up is full).
+    pub busy: f32,
+    /// Loudness next to the song's own loud parts (0..1), whatever the mix: a quiet song
+    /// playing out is as "full" as a loud one.
+    pub energy: f32,
 }
 
 impl Default for AnalysisFrame {
@@ -74,6 +84,10 @@ impl Default for AnalysisFrame {
             beat_strength: 0.0,
             bpm: 0.0,
             beat_phase: 0.0,
+            onset_count: 0,
+            onset_strength: 0.0,
+            busy: 0.0,
+            energy: 0.0,
         }
     }
 }
@@ -94,6 +108,9 @@ pub struct Analyzer {
     beats: BeatTracker,
     /// This hop's band levels before smoothing (what the beat tracker reads).
     raw: [f32; BANDS],
+    /// The song's recent loud level (a slowly falling peak of the RMS), and hops per second.
+    loud: f32,
+    hop_rate: f32,
 }
 
 impl Analyzer {
@@ -135,6 +152,8 @@ impl Analyzer {
             frame: AnalysisFrame::default(),
             beats: BeatTracker::new(sample_rate as f32 / HOP as f32, &centers),
             raw: [0.0; BANDS],
+            loud: 0.0,
+            hop_rate: sample_rate as f32 / HOP as f32,
         }
     }
 
@@ -202,6 +221,16 @@ impl Analyzer {
         }
         f.bpm = self.beats.bpm().unwrap_or(0.0);
         f.beat_phase = self.beats.phase();
+        f.onset_count = self.beats.onsets;
+        f.onset_strength = self.beats.onset_strength;
+        f.busy = self.beats.busy();
+        // Loudness against a peak that falls over ~8 s (with a floor, so silence isn't "full").
+        self.loud = f
+            .rms
+            .max(self.loud * (-1.0 / (8.0 * self.hop_rate)).exp())
+            .max(0.01);
+        let energy = (f.rms / self.loud).clamp(0.0, 1.0);
+        f.energy += (energy - f.energy) * (1.0 - (-1.0 / (0.12 * self.hop_rate)).exp());
 
         f.seq += 1;
         &self.frame

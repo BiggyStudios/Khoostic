@@ -21,6 +21,10 @@ fn main() -> anyhow::Result<()> {
         // (time, strength) of every beat.
         let mut beats: Vec<(f64, f32)> = Vec::new();
         let mut tempo_at = Vec::new();
+        // Averages of the rhythm readings the 3D visualizer moves to.
+        let (mut busy, mut energy, mut bass, mut n) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let mut last_onsets = 0;
+        let mut hits = 0u64;
         loop {
             buf.clear();
             if src.read(&mut buf)? == ReadStatus::End {
@@ -33,6 +37,16 @@ fn main() -> anyhow::Result<()> {
                 let f = analyzer.process_hop(&hop);
                 hops += 1;
                 let t = hops as f64 * hop_secs;
+                if f.rms > 0.01 {
+                    busy += f.busy as f64;
+                    energy += f.energy as f64;
+                    bass += f.bass as f64;
+                    n += 1.0;
+                }
+                if f.onset_count != last_onsets {
+                    last_onsets = f.onset_count;
+                    hits += 1;
+                }
                 if f.beat_count != last_count {
                     last_count = f.beat_count;
                     beats.push((t, f.beat_strength));
@@ -71,11 +85,15 @@ fn main() -> anyhow::Result<()> {
         let ghosts = beats.iter().filter(|(_, s)| *s <= 0.3).count();
         let accents = beats.iter().filter(|(_, s)| *s > 1.0).count();
         println!(
-            "{name}: {secs:.0} s, {} beats ({ghosts} soft, {accents} accented), interval {:.3} s = {:.1} BPM, {:.0}% steady\n  tempo over time: {}",
+            "{name}: {secs:.0} s, {} beats ({ghosts} soft, {accents} accented), interval {:.3} s = {:.1} BPM, {:.0}% steady\n  rhythm: {:.1} hits/s, busy {:.2}, energy {:.2}, bass {:.2}\n  tempo over time: {}",
             beats.len(),
             median,
             60.0 / median.max(1e-9),
             steady * 100.0,
+            hits as f64 / secs,
+            busy / n.max(1.0),
+            energy / n.max(1.0),
+            bass / n.max(1.0),
             tempo_at.join(" "),
         );
     }

@@ -196,6 +196,13 @@ fn safe_normalize(v: vec3<f32>) -> vec3<f32> {
 
 // Where the wave's lead point is at (music) time `tau`: a loop of swings that never quite
 // repeats, kept in front of the camera.
+// Turns a point around the vertical axis (the whole wave going round).
+fn turn_y(p: vec3<f32>, a: f32) -> vec3<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec3<f32>(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+}
+
 fn path(tau: f32) -> vec3<f32> {
     return vec3<f32>(
         sin(tau * 0.6) * 0.95 + sin(tau * 1.37) * 0.25,
@@ -296,8 +303,10 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     let lag = seed.x * tune(T_LENGTH);
     // The wave roams wider when the music is full.
     let reach = (0.8 + 0.5 * u.motion2.z) * tune(T_REACH);
-    let here = path(tau - lag) * reach;
-    let tangent = safe_normalize(path(tau - lag + 0.05) * reach - here);
+    // The whole wave turns with the music'"'"'s spin (more for busy rhythms).
+    let yaw = u.spectral.w;
+    let here = turn_y(path(tau - lag) * reach, yaw);
+    let tangent = safe_normalize(turn_y(path(tau - lag + 0.05) * reach, yaw) - here);
     let n1 = safe_normalize(cross(tangent, vec3<f32>(0.0, 1.0, 0.3)));
     let n2 = cross(tangent, n1);
     // A ribbon: wide one way, thin the other, twisting along its length.
@@ -335,6 +344,9 @@ fn sim(@builtin(global_invocation_id) id: vec3<u32>) {
     // Sudden mids whip the cubes around the spine.
     let mid_punch = u.motion2.y;
     v += (cross(tangent, blast) * 9.0 + blast * 2.0) * mid_punch * select(1.0, 1.5, spark) * tune(T_MID_WHIP) * dt;
+    // A busy rhythm (a drum loop, hats, breaks) keeps the cubes orbiting the spine, harder on
+    // every hit.
+    v += cross(tangent, blast) * u.spectral.y * select(4.0, 6.0, spark) * tune(T_MID_WHIP) * dt;
     // Every cube belongs to a frequency band: when that band flares (a syllable, a hi-hat, a
     // synth stab) its cubes get thrown out and spun around the spine, bass or no bass.
     let my_flare = flare(i % BARS);
@@ -489,7 +501,12 @@ fn fs_cube(in: VsOut) -> @location(0) vec4<f32> {
     var color = diffuse + reflection + spec + rim + in.color * in.glow;
     // Fog into the backdrop with distance (only once in 3D).
     let fog = 1.0 - exp(-max(dist - 2.0, 0.0) * u.view.w);
-    color = mix(color, u.surface.rgb * 0.55, clamp(fog, 0.0, 0.95));
+    // Into the backdrop's color: dark themes darken, light ones deepen (and fog less, so the
+    // cubes keep their color against the pale room).
+    let s = u.surface.rgb;
+    let light = dot(s, vec3<f32>(0.2126, 0.7152, 0.0722)) > 0.5;
+    let fog_color = select(s * 0.55, mix(s, s * s * s, 0.45), light);
+    color = mix(color, fog_color, clamp(fog * select(1.0, 0.55, light), 0.0, 0.95));
     return vec4<f32>(color, 1.0);
 }
 
@@ -518,5 +535,13 @@ fn fs_bg(in: BgOut) -> @location(0) vec4<f32> {
     let vignette = mix(1.0, (1.0 - smoothstep(0.2, 1.1, d) * 0.6) * 0.6, into_3d);
     let glow = spectrum(0.35) * exp(-d * d * 4.0) * (0.015 + 0.05 * u.audio.x + 0.12 * u.motion.z * tune(T_FLASH))
         * (0.4 + 0.6 * into_3d) * tune(T_BACKDROP_GLOW);
-    return vec4<f32>(u.surface.rgb * vignette + glow, 1.0);
+    var base = u.surface.rgb * vignette;
+    // A light theme deepens toward a richer shade of itself instead (darkening a pale color
+    // just greys it).
+    let s = u.surface.rgb;
+    if dot(s, vec3<f32>(0.2126, 0.7152, 0.0722)) > 0.5 {
+        let deep = s * s * s;
+        base = mix(s, deep, (0.25 + 0.6 * smoothstep(0.2, 1.1, d)) * into_3d);
+    }
+    return vec4<f32>(base + glow, 1.0);
 }

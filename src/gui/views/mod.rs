@@ -15,6 +15,7 @@ pub mod playlists;
 pub mod search;
 pub mod settings;
 pub mod visualizer;
+pub mod viz_motion;
 pub mod viz_settings;
 
 use crate::audio::AnalysisFrame;

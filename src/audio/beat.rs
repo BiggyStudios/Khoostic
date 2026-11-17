@@ -77,6 +77,11 @@ pub(crate) struct BeatTracker {
     beat_level: f32,
     /// When the last beat (real or ghost) fired, for the phase.
     last_beat: f64,
+    /// Every onset so far (any hit: beats, hats, snares, a loop's stabs), the latest one's
+    /// strength next to the song's usual (0.2..1), and when recent ones happened.
+    pub onsets: u64,
+    pub onset_strength: f32,
+    recent: std::collections::VecDeque<u64>,
 }
 
 impl BeatTracker {
@@ -117,12 +122,22 @@ impl BeatTracker {
             regrid: 0,
             beat_level: 0.0,
             last_beat: 0.0,
+            onsets: 0,
+            onset_strength: 0.0,
+            recent: Default::default(),
         }
     }
 
     /// The tempo, once there is one.
     pub(crate) fn bpm(&self) -> Option<f32> {
         (self.period > 0.0 && self.locked).then(|| 60.0 * self.rate / self.period)
+    }
+
+    /// How busy the rhythm is: clear hits per second over the last two, from 1.5 a second
+    /// (sparse) to 6.5 (a busy loop: 16ths at ~100 BPM) and up.
+    pub(crate) fn busy(&self) -> f32 {
+        let per_sec = self.recent.len() as f32 / 2.0;
+        ((per_sec - 1.5) / 5.0).clamp(0.0, 1.0)
     }
 
     /// How far into the current beat we are (0 at a beat, 1 at the next).
@@ -162,6 +177,13 @@ impl BeatTracker {
         if onset {
             self.armed = false;
             self.last_onset = t;
+            self.onsets += 1;
+            let rel = flux / self.odf_mean.max(1e-4);
+            self.onset_strength = ((rel - 1.5) / 3.0).clamp(0.2, 1.0);
+            // Busyness counts clear hits only (not every small rise).
+            if self.onset_strength >= 0.3 {
+                self.recent.push_back(t);
+            }
             if flux > self.odf_mean * 2.2 {
                 self.last_strong = Some((t, flux));
             }
@@ -169,6 +191,10 @@ impl BeatTracker {
             self.armed = true;
         }
 
+        let window = (2.0 * self.rate) as u64;
+        while self.recent.front().is_some_and(|&h| t - h > window) {
+            self.recent.pop_front();
+        }
         self.since_estimate += 1;
         if self.since_estimate as f32 >= ESTIMATE_EVERY_SECS * self.rate
             && self.odf_filled as f32 >= self.rate * 3.0

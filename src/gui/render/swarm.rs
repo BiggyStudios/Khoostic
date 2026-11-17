@@ -47,6 +47,9 @@ pub struct SwarmFrame {
     /// 1 with no bass, down to 0.3 with a strong bass: how much the rest of the spectrum
     /// leads.
     pub bassless: f32,
+    /// Cubes orbiting the wave's spine with the rhythm, and the whole wave's turn (radians).
+    pub swirl: f32,
+    pub yaw: f32,
     /// The user's knobs (`[visualizer.tuning]`).
     pub tuning: VisualizerTuning,
     pub dt: f32,
@@ -333,7 +336,7 @@ impl Swarm {
                 f.walls * f.tuning.walls,
                 f.tuning.fog * f.depth,
             ],
-            spectral: [f.bassless, 0.0, 0.0, 0.0],
+            spectral: [f.bassless, f.swirl, 0.0, f.yaw],
             bars: f.bars,
             spectrum: f.spectrum.map(lin),
             accent: lin(f.accent),
@@ -518,6 +521,8 @@ mod tests {
             flares: [0.0; 64],
             onset: 0.0,
             bassless: 1.0,
+            swirl: 0.0,
+            yaw: 0.0,
             tuning: VisualizerTuning::default(),
             dt: 0.016,
             mode: Mode::Bars,

@@ -18,21 +18,8 @@ const FADE: f32 = 0.25;
 #[derive(Default)]
 pub(crate) struct Viz3d {
     stage: Stage,
-    /// Seconds the storm has run; drives its flow and the camera drift.
-    time: f32,
-    /// Music time: speeds up with the bass and mids, so the wave swings harder to loud music.
-    tau: f32,
-    /// Beats seen so far (a new one is a hit), the hit envelope, and a slow bass average to
-    /// tell sudden bass from loud bass.
-    beats: u64,
-    impact: f32,
-    slow_bass: f32,
-    /// The ribbon's spin, a slow mids average (for mid punches) and how full the music is.
-    spin: f32,
-    slow_mid: f32,
-    fullness: f32,
-    /// Every band against its own recent range: flares and sudden-sound hits.
-    spectrum: SpectrumTracker,
+    /// The music, as motion.
+    motion: super::viz_motion::Motion,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -175,69 +162,26 @@ impl Gui {
         let t = ui.theme.clone();
         let k = self.viz_tuning;
         ui.anim.keep_alive();
-        let v = &mut self.viz3d;
-        v.time += dt;
-        // Beats come from the analyzer's beat tracker: on the tempo, as hard as the beat is
-        // (accents, where several things land at once, hit harder; a soft "ghost" keeps the
-        // pulse through quiet parts). Nothing between beats hits.
-        let kick = if a.beat_count != v.beats {
-            a.beat_strength.clamp(0.0, 1.25)
-        } else {
-            0.0
-        };
-        v.beats = a.beat_count;
-        // At any tempo a hit settles before the next beat, so every beat lands on its own.
-        let tempo = if a.bpm > 0.0 {
-            (a.bpm / 120.0).clamp(0.6, 1.7)
-        } else {
-            1.0
-        };
-        v.impact = (v.impact * (-dt * k.recover * tempo).exp()).max(kick);
-        v.slow_bass += (a.bass - v.slow_bass) * (1.0 - (-dt * 2.5).exp());
-        let punch = ((a.bass - v.slow_bass) * 3.0).clamp(0.0, 1.0);
-        v.slow_mid += (a.mid - v.slow_mid) * (1.0 - (-dt * 3.0).exp());
-        let mid_punch = ((a.mid - v.slow_mid) * 4.0).clamp(0.0, 1.0);
-        let level = (a.bass + a.mid + a.treble) / 3.0;
-        v.fullness += (level - v.fullness) * (1.0 - (-dt * 1.5).exp());
-        // The whole spectrum: per-band flares, onsets from any sudden sound (softer hits than
-        // a beat), and how busy the music is relative to itself.
-        let (activity, onset) = v.spectrum.update(a, dt);
-        // These fill in where the bass is missing; with a strong bass, the bass leads.
-        let bassless = 1.0 - 0.7 * v.slow_bass.clamp(0.0, 1.0);
-        let onset = onset.map_or(0.0, |s| s * k.onset_kick * bassless);
-        if onset > 0.0 {
-            v.impact = v.impact.max((0.4 * onset).min(1.0));
-        }
-        // Spins with the mids (and a little treble), always a little.
-        v.spin += dt
-            * (k.spin
-                + k.mid_spin * a.mid
-                + 1.2 * a.treble
-                + 1.5 * mid_punch
-                + k.activity_speed * activity);
-        // Swings faster with the whole mix and lunges on every hit.
-        // Whichever asks for more: the levels (bass, mids, treble), or how busy the music is
-        // for itself, which keeps quiet parts (a vocal over a sparse beat) moving too.
-        let levels = k.bass_speed * a.bass + k.mid_speed * a.mid + k.treble_speed * a.treble;
-        let busy = k.activity_speed * 2.0 * activity;
-        // The base flow keeps time with the song too.
-        v.tau += dt * (k.speed * tempo + levels.max(busy) + k.lunge * v.impact * v.impact);
+        let m = &mut self.viz3d.motion;
+        m.update(a, dt, &k);
         let (mode, phase, depth, walls) = stage;
         SwarmFrame {
             size: (0, 0),
             logical: (0.0, 0.0),
             bars,
-            time: v.time,
-            tau: v.tau,
-            kick,
-            impact: v.impact,
-            punch,
-            spin: v.spin,
-            mid_punch,
-            fullness: v.fullness,
-            bassless,
-            flares: v.spectrum.flare,
-            onset,
+            time: m.time,
+            tau: m.tau,
+            kick: m.kick,
+            impact: m.impact,
+            punch: m.punch,
+            spin: m.spin,
+            mid_punch: m.whip,
+            fullness: m.fullness,
+            bassless: m.bassless,
+            swirl: m.swirl,
+            yaw: m.yaw,
+            flares: m.flares(),
+            onset: m.onset,
             tuning: k,
             dt,
             mode,
@@ -245,7 +189,8 @@ impl Gui {
             depth,
             walls,
             bands: a.bands,
-            bass: a.bass,
+            // What the bass would drive, driven by the rhythm when there's little bass.
+            bass: m.drive,
             mid: a.mid,
             treble: a.treble,
             beat: a.beat,
